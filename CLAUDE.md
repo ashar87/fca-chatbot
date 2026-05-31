@@ -1,0 +1,296 @@
+# FCA Data Portal — Chatbot Demo
+
+A visual clone of [data.fca.org.uk](https://data.fca.org.uk) with an embedded AI chatbot that answers questions using live FCA public data. Built as a stakeholder demo; not a production deployment.
+
+---
+
+## Tech Stack
+
+| Layer | Choice |
+|---|---|
+| Framework | Next.js 14 (App Router) |
+| Language | TypeScript |
+| Styling | Tailwind CSS |
+| AI Model | Gemini Flash (`gemini-flash-latest`) via `@google/generative-ai` |
+| PDF extraction | `pdf-parse` |
+| Markdown rendering | `react-markdown` |
+| Deployment target | Vercel |
+
+---
+
+## Project Structure
+
+```
+src/
+├── app/
+│   ├── page.tsx                  # Root page — two-column layout, section state
+│   ├── layout.tsx                # HTML shell, global font/metadata
+│   ├── globals.css               # CSS variables, FCA form/table/sidebar classes
+│   └── api/
+│       ├── chat/route.ts         # AI chat endpoint (POST, streaming SSE)
+│       ├── nsm/route.ts          # NSM search REST endpoint (GET)
+│       ├── firds/route.ts        # FIRDS search REST endpoint (GET)
+│       ├── fitrs/route.ts        # FITRS lookup REST endpoint (GET)
+│       └── short-selling/route.ts# Short selling REST endpoint (GET)
+├── components/
+│   ├── ChatWidget.tsx            # Floating chat panel, SSE streaming, starter prompts
+│   ├── Header.tsx                # White header with FCA logo (SVG chevron + wordmark)
+│   ├── NavBar.tsx                # Purple full-width nav bar (Homepage + Print)
+│   ├── Sidebar.tsx               # Left sidebar — accordion sections, register links
+│   ├── Footer.tsx                # Dark footer (copyright, back-to-top, links)
+│   ├── NavTabs.tsx               # Exports PortalSection type (no rendered component)
+│   ├── NSMSearchPage.tsx         # NSM search form matching real portal layout
+│   ├── FIRDSSearchPage.tsx       # FIRDS instrument lookup page
+│   ├── FITRSSearchPage.tsx       # FITRS transparency data page
+│   └── ShortSellingPage.tsx      # Short selling register page
+└── lib/
+    └── fca-tools.ts              # All FCA API calls + data models
+```
+
+## Page Layout
+
+The page uses a two-column layout matching the real FCA Data Portal:
+
+```
+┌─────────────────────────────────────────────────────┐
+│ [DEMO BANNER — yellow]                              │
+├─────────────────────────────────────────────────────┤
+│ [WHITE HEADER — FCA logo]                           │
+├─────────────────────────────────────────────────────┤
+│ [PURPLE NAV BAR — Homepage | Print]                 │
+├───────────────────┬─────────────────────────────────┤
+│ SIDEBAR           │ MAIN CONTENT                    │
+│ • National        │ (search form / results)         │
+│   Storage Mech.   │                                 │
+│   - NSM Search    │                                 │
+│   - About NSM     │                                 │
+│ • List of Regs    │                                 │
+│   - FIRDS         │                                 │
+│   - FITRS         │                                 │
+│   - Short Selling │                                 │
+├───────────────────┴─────────────────────────────────┤
+│ [DARK FOOTER — copyright | back to top | links]     │
+└─────────────────────────────────────────────────────┘
+```
+
+## Navigation Type
+
+`PortalSection` (in `NavTabs.tsx`) replaces the old `PortalTab`:
+```ts
+type PortalSection = "nsm-search" | "nsm-about" | "firds" | "fitrs" | "short-selling";
+```
+
+## CSS Design System
+
+`globals.css` defines reusable FCA-style classes used across all search pages:
+
+| Class | Purpose |
+|---|---|
+| `.fca-form` | Grey (#ebebeb) form container, no border-radius |
+| `.fca-form-row` | 4-column grid: label / field / label / field |
+| `.fca-form-row-single` | 2-column grid: label / field |
+| `.fca-form-section-header` | Purple bold section title within a form |
+| `.fca-label` | Bold form label |
+| `.fca-field` | Field cell padding |
+| `.fca-input` | White input, grey border, no border-radius, yellow focus ring |
+| `.fca-select` | Matching select element |
+| `.fca-btn-primary` | Purple button, no border-radius |
+| `.fca-btn-secondary` | Grey secondary button |
+| `.fca-table` | Results table with purple header, alternating rows |
+| `.sidebar-section-header` | Purple sidebar section header |
+| `.sidebar-item` | Grey sub-item (for NSM sub-pages) |
+| `.sidebar-link` | Blue-link register items |
+| `.content-panel` | Bordered white content area |
+
+## Colour Palette
+
+| Variable | Value | Usage |
+|---|---|---|
+| `--fca-purple` | `#701b45` | Primary — headers, buttons, sidebar (sampled directly from logo PNG) |
+| `--fca-purple-dark` | `#4d1230` | Hover state |
+| `--fca-text` | `#0b0c0c` | Body text |
+| `--fca-link` | `#1a6ca8` | Sidebar register links |
+| `--fca-border` | `#b1b4b6` | Input borders |
+| `--fca-form-bg` | `#ebebeb` | Form background |
+| `--fca-footer-bg` | `#1a1a1a` | Footer background |
+
+---
+
+## Architecture
+
+### Data Flow
+
+```
+User (ChatWidget)
+    │  POST /api/chat  { messages[] }
+    ▼
+chat/route.ts
+    │  Gemini Flash (agentic loop, up to 5 turns)
+    │  ├── tool call → executeTool()
+    │  │       └── fca-tools.ts functions
+    │  │               └── fetch/POST to data.fca.org.uk / api.data.fca.org.uk
+    │  └── final text → SSE stream back to client
+    ▼
+ChatWidget (renders markdown, streams word-by-word)
+```
+
+The chat route runs an **agentic loop** (max 5 turns): Gemini can call multiple tools in sequence before producing a final answer.
+
+### Streaming
+
+`/api/chat` returns a `text/event-stream` response. Each SSE frame is:
+```
+data: {"text": "word "}
+```
+Terminated by `data: [DONE]`. The client appends each chunk to the assistant message in real time.
+
+---
+
+## AI Tools (Gemini Function Declarations)
+
+The LLM has access to six tools. Descriptions are crafted to guide Gemini toward the correct tool for each question type.
+
+### NSM Tools
+
+The NSM search is split into **three distinct tools** because the FCA search API uses different `criteriaObj` shapes for each case:
+
+| Tool | Criterion | When to use |
+|---|---|---|
+| `search_nsm_by_company` | `company_lei: [name, "", "disclose_org", "related_org"]` | "Show me Barclays filings" |
+| `search_nsm_by_lei` | `company_lei: ["", LEI_CODE, "disclose_org", "related_org"]` | User provides/knows a LEI code |
+| `search_nsm_by_content` | `document_content: [keywords, "exact_match"]` | "Find docs mentioning climate risk" |
+
+All three include `latest_flag: Y`, `sort: submitted_date`, and optional `type` + date range filters.
+
+The `company_lei` value array format is: `[text_search, lei_search, scope_flag_1, scope_flag_2]`. Including `"disclose_org"` and `"related_org"` causes the API to also match documents where the company appears as a disclosing or related organisation (not just the primary filer).
+
+**Key insight from real API responses:** A text name search ("barclays") returns ~52k results including ETFs with "Barclays" in their fund name. A LEI search returns ~20k results scoped precisely to Barclays PLC's own filings and related disclosures.
+
+### Other Tools
+
+| Tool | Backend function | FCA endpoint |
+|---|---|---|
+| `fetch_pdf_summary` | `fetchPDFSummary` | Direct PDF URL → `pdf-parse` |
+| `search_firds` | `searchFIRDS` | `/api/proxy/firds/instruments` |
+| `search_fitrs` | `searchFITRS` | `/api/proxy/fitrs/bonds/{isin}` |
+| `get_short_positions` | `getShortPositions` | `/api/proxy/ssr/positions` |
+
+---
+
+## FCA API Details
+
+### Base URLs
+
+```
+FCA_BASE     = https://data.fca.org.uk
+FCA_API_BASE = https://api.data.fca.org.uk
+```
+
+### NSM Search Endpoint
+
+```
+POST https://api.data.fca.org.uk/search?index=fca-nsm-searchdata
+Content-Type: application/json
+Origin: https://data.fca.org.uk
+```
+
+**Request body shape:**
+```json
+{
+  "from": 0,
+  "size": 50,
+  "sort": "submitted_date",
+  "sortorder": "desc",
+  "criteriaObj": {
+    "criteria": [
+      { "name": "company_lei", "value": ["text", "LEI", "disclose_org", "related_org"] },
+      { "name": "latest_flag", "value": "Y" }
+    ],
+    "dateCriteria": [
+      { "name": "publication_date", "value": { "from": null, "to": "2026-05-29T22:36:00Z" } },
+      { "name": "submitted_date",   "value": { "from": null, "to": "2026-05-29T22:36:00Z" } }
+    ]
+  }
+}
+```
+
+**Important:** The API rejects ISO timestamps that contain milliseconds (`.000Z`). Always strip milliseconds before sending dates.
+
+**Known issue:** The NSM endpoint is protected by Cloudflare Bot Management which checks TLS/JA3 fingerprints. Node.js fetch may be blocked depending on the deployment environment. The `fcaPost` helper uses native `fetch` with appropriate headers; if blocked, curl-based fallback may be needed.
+
+### Key NSM Response Fields
+
+| Field | Description |
+|---|---|
+| `hits.total.value` | Total number of matching records (not just the current page) |
+| `_source.headline` | Filing title / headline |
+| `_source.company` | Filer company name (may end with `;` — trim it) |
+| `_source.type` | Human-readable filing type (e.g. "Form 8.3", "Holding(s) in Company") |
+| `_source.type_code` | Short code (e.g. "RET", "HOL", "ADM", "FEO") |
+| `_source.lei` | LEI of the primary filer |
+| `_source.related_org[]` | Array of related organisations with `lei` and `company` |
+| `_source.source` | Submission channel: "RNS", "Direct Upload", "EQS", "FCA" |
+| `_source.download_link` | Relative path; prepend `https://data.fca.org.uk/artefacts/` |
+| `_source.publication_date` | When published to NSM |
+| `_source.submitted_date` | When submitted by the filer |
+
+### Filing Type Aliases
+
+Friendly names the LLM passes are mapped to actual API `type` values in `resolveFilingType()`:
+
+| Alias | API value |
+|---|---|
+| "annual report" | `Annual Report` |
+| "circular" / "offering circular" | `Circ re.` |
+| "holding" / "major holdings" | `Holding(s) in Company` |
+| "form 8.3" | `Form 8.3` |
+| "form 8.5" | `Form 8.5 (EPT/NON-RI)` |
+| "admission" | `Admission to Trading` |
+| "irish takeover" | `Irish Takeover Panel` |
+| "nav" | `Net Asset Value(s)` |
+
+---
+
+## Environment Variables
+
+| Variable | Required | Description |
+|---|---|---|
+| `GEMINI_API_KEY` | Yes | Google Gemini API key |
+
+Add to `.env.local` for local development.
+
+---
+
+## Rate Limiting
+
+`/api/chat` applies a simple in-memory rate limit: **20 requests per IP per minute**. Exceeds → 429. This resets on server restart and is not suitable for production.
+
+---
+
+## Short Selling Data
+
+Positions are fetched from the FCA SSR endpoint and cached in-memory for **2 hours** (`CACHE_TTL`). The cache lives on the server process — it resets on cold starts.
+
+---
+
+## Running Locally
+
+```bash
+npm install
+echo "GEMINI_API_KEY=your_key_here" > .env.local
+npm run dev
+```
+
+App runs at `http://localhost:3000`.
+
+---
+
+## Key Design Decisions
+
+- **Three NSM search tools instead of one** — the FCA API's `criteriaObj` is fundamentally different for company-identity searches vs. document-content searches. A single generic tool caused the LLM to use the wrong criterion and return irrelevant results.
+- **`company_lei` over `document_content` for company searches** — `document_content` with `exact_match` searches inside document bodies; it is not a company name index. Company-name resolution must use the `company_lei` criterion.
+- **`disclose_org` + `related_org` scope flags** — without these, the API only matches on the primary `lei` field and misses documents where the company is a related/disclosing org.
+- **LEI vs. name search tradeoff** — name-based gives ~2.6× more results than LEI-based for Barclays, because name search matches funds/ETFs that merely reference "Barclays" in their name. LEI search is scoped to the legal entity.
+- **`any_word` for content searches, `exact_match` for company searches** — `search_nsm_by_content` uses `any_word` so keyword queries return broad, useful results. Company/LEI searches don't use the `document_content` criterion at all, so match mode is irrelevant there.
+- **Date descriptions embed today's date** — `dateFromDesc()` and `dateToDesc()` are called at request time (not module load) and inject the current date so the LLM can correctly resolve relative phrases like "last week" or "since March" into YYYY-MM-DD values.
+- **Streaming over JSON** — the chat endpoint uses SSE streaming so the UI feels responsive during multi-turn tool calls that can take several seconds.
