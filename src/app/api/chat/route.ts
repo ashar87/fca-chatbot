@@ -46,7 +46,8 @@ Keep clarifying questions short. Offer options so the user can reply with a sing
 5. If data is unavailable or the query is out of scope, say so clearly.
 6. Be concise: lead with the direct answer, then provide supporting detail.
 7. Mention the total number of matching records when returning NSM results (e.g. "Found 19,985 filings — showing the 50 most recent").
-8. Never provide investment, legal, or regulatory advice.`;
+8. Never provide investment, legal, or regulatory advice.
+9. Only call fetch_pdf_summary when the user explicitly asks for content FROM a document (e.g. "summarise this", "what does it say about X", "extract the risk section"). Do NOT fetch PDFs when simply returning search results — show the list of results with links and wait for the user to ask for more detail.`;
 
 function todayStr() {
   return new Date().toISOString().slice(0, 10);
@@ -133,12 +134,16 @@ Do NOT use this to find a company's own filings — use search_nsm_by_company fo
   },
   {
     name: "fetch_pdf_summary",
-    description: "Fetch and extract text content from a publicly accessible NSM PDF document for summarisation.",
+    description: `Fetch and extract text from a publicly accessible NSM PDF document.
+Only call this when the user explicitly asks for information FROM a document — e.g. "summarise the key risks", "what does it say about capital requirements", "extract the revenue figures".
+Do NOT call this when simply listing or returning search results — in that case, return the document links and let the user decide whether to read further.
+The tool returns up to 50,000 characters. If extraction_prompt is provided, it locates the first match in the full document and returns the surrounding text — always set this to the topic the user is asking about.
+After receiving the extracted text, answer the user's question directly using that content.`,
     parameters: {
       type: SchemaType.OBJECT,
       properties: {
-        url: { type: SchemaType.STRING, description: "The public URL of the PDF document" },
-        extraction_prompt: { type: SchemaType.STRING, description: "What to extract — e.g. 'key risks', 'revenue and profit figures'" },
+        url: { type: SchemaType.STRING, description: "The full public URL of the PDF document (must start with https://data.fca.org.uk/artefacts/)" },
+        extraction_prompt: { type: SchemaType.STRING, description: "Keywords describing what to extract — e.g. 'key risks', 'revenue', 'directors', 'capital requirements'. The tool will scan the document and return text around the first match." },
       },
       required: ["url", "extraction_prompt"],
     },
@@ -330,7 +335,10 @@ async function executeTool(name: string, input: Record<string, unknown>): Promis
         page: input.page !== undefined ? Number(input.page) : undefined,
       });
     case "fetch_pdf_summary":
-      return fetchPDFSummary(String(input.url ?? ""));
+      return fetchPDFSummary(
+        String(input.url ?? ""),
+        input.extraction_prompt ? String(input.extraction_prompt) : undefined
+      );
     case "search_firds":
       return searchFIRDS({
         isin: input.isin ? String(input.isin) : undefined,

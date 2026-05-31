@@ -251,20 +251,38 @@ export async function searchNSM(params: {
   return filings;
 }
 
-export async function fetchPDFSummary(pdfUrl: string): Promise<string> {
-  // Fetch the PDF and extract text server-side
+export async function fetchPDFSummary(pdfUrl: string, extractionPrompt?: string): Promise<string> {
   const res = await fetch(pdfUrl, {
     headers: { "User-Agent": "FCA-Demo-Bot/1.0" },
   });
-  if (!res.ok) return `Could not fetch PDF at ${pdfUrl}`;
+  if (!res.ok) return `Could not fetch PDF at ${pdfUrl} (HTTP ${res.status})`;
   const buffer = await res.arrayBuffer();
-  // Dynamically import pdf-parse to avoid edge runtime issues
+
   try {
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    const pdfParse: (buf: Buffer) => Promise<{ text: string }> = (await import("pdf-parse") as any).default ?? (await import("pdf-parse") as any);
+    const pdfParse: (buf: Buffer) => Promise<{ text: string; numpages: number }> = (await import("pdf-parse") as any).default ?? (await import("pdf-parse") as any);
     const result = await pdfParse(Buffer.from(buffer));
-    // Return first ~3000 chars
-    return result.text.slice(0, 3000);
+    const fullText = result.text;
+    const totalChars = fullText.length;
+    const LIMIT = 50_000;
+
+    // If the caller specified what to look for, try to find the most relevant
+    // section by scanning for the keyword in the full text and returning a
+    // window of up to LIMIT chars centred around the first match.
+    if (extractionPrompt) {
+      const needle = extractionPrompt.toLowerCase();
+      const idx = fullText.toLowerCase().indexOf(needle);
+      if (idx !== -1) {
+        const start = Math.max(0, idx - 500);
+        const end = Math.min(totalChars, start + LIMIT);
+        const excerpt = fullText.slice(start, end);
+        return `[PDF: ${result.numpages} pages, ${totalChars.toLocaleString()} chars total — showing ${excerpt.length.toLocaleString()} chars from match for "${extractionPrompt}"]\n\n${excerpt}`;
+      }
+    }
+
+    // Default: return from the beginning up to the limit
+    const excerpt = fullText.slice(0, LIMIT);
+    return `[PDF: ${result.numpages} pages, ${totalChars.toLocaleString()} chars total — showing first ${excerpt.length.toLocaleString()} chars]\n\n${excerpt}`;
   } catch {
     return `PDF text extraction failed. Direct link: ${pdfUrl}`;
   }
