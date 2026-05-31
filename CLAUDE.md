@@ -170,7 +170,7 @@ The `company_lei` value array format is: `[text_search, lei_search, scope_flag_1
 
 | Tool | Backend function | FCA endpoint |
 |---|---|---|
-| `fetch_pdf_summary` | `fetchPDFSummary` | Direct PDF URL → `pdf-parse` |
+| `fetch_pdf_summary` | `fetchPDFSummary` | Direct PDF URL → `pdf-parse` (50k char limit, keyword-targeted) |
 | `search_firds` | `searchFIRDS` | `/api/proxy/firds/instruments` |
 | `search_fitrs` | `searchFITRS` | `/api/proxy/fitrs/bonds/{isin}` |
 | `get_short_positions` | `getShortPositions` | `/api/proxy/ssr/positions` |
@@ -285,6 +285,37 @@ App runs at `http://localhost:3000`.
 
 ---
 
+## Model Behaviour (System Prompt)
+
+The system prompt in `chat/route.ts` governs three areas:
+
+### Tool routing
+- Broad company queries → ask clarifying question (filing type, date range) before searching
+- Company name → `search_nsm_by_company`; LEI code → `search_nsm_by_lei`; topic/keyword → `search_nsm_by_content`
+- PDF fetch only triggered when user explicitly asks for content from a document — not on search results
+
+### PDF extraction (`fetchPDFSummary`)
+- **50,000 character limit** (raised from 3,000)
+- `extraction_prompt` is used to scan the full document and return a focused window around the first keyword match — much more useful for large annual reports
+- Returns metadata header: page count and total document size
+
+### Prompt injection & off-topic filter
+
+Two-layer defence in `chat/route.ts`:
+
+**Layer 1 — `guardInput()` pre-filter** (runs before Gemini is called):
+| Check | Detail |
+|---|---|
+| Length cap | Rejects messages > 2,000 chars (token-stuffing) |
+| Injection patterns | 7 regexes: "ignore previous instructions", "you are now a...", "reveal your system prompt", "jailbreak", etc. |
+| Off-topic | Blocks clearly unrelated queries (jokes, recipes, geography) only if no FCA signals are present in the message |
+
+Blocked messages receive the polite redirect as a streamed SSE response — no Gemini API call is made.
+
+**Layer 2 — System prompt hardening**: A `## Security & scope` section tells Gemini to refuse off-topic questions and ignore injected instructions that make it through the pre-filter.
+
+---
+
 ## Key Design Decisions
 
 - **Three NSM search tools instead of one** — the FCA API's `criteriaObj` is fundamentally different for company-identity searches vs. document-content searches. A single generic tool caused the LLM to use the wrong criterion and return irrelevant results.
@@ -293,4 +324,6 @@ App runs at `http://localhost:3000`.
 - **LEI vs. name search tradeoff** — name-based gives ~2.6× more results than LEI-based for Barclays, because name search matches funds/ETFs that merely reference "Barclays" in their name. LEI search is scoped to the legal entity.
 - **`any_word` for content searches, `exact_match` for company searches** — `search_nsm_by_content` uses `any_word` so keyword queries return broad, useful results. Company/LEI searches don't use the `document_content` criterion at all, so match mode is irrelevant there.
 - **Date descriptions embed today's date** — `dateFromDesc()` and `dateToDesc()` are called at request time (not module load) and inject the current date so the LLM can correctly resolve relative phrases like "last week" or "since March" into YYYY-MM-DD values.
+- **Clarifying questions before searching** — the system prompt instructs Gemini to ask for filing type or date range when a query is broad, rather than returning 50k unfiltered results.
+- **Pre-filter before Gemini** — `guardInput()` blocks obvious injection attempts and off-topic queries server-side, preventing unnecessary API calls and reducing attack surface.
 - **Streaming over JSON** — the chat endpoint uses SSE streaming so the UI feels responsive during multi-turn tool calls that can take several seconds.
