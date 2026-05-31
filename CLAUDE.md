@@ -308,7 +308,16 @@ Two-layer defence in `chat/route.ts`:
 |---|---|
 | Length cap | Rejects messages > 2,000 chars (token-stuffing) |
 | Injection patterns | 7 regexes: "ignore previous instructions", "you are now a...", "reveal your system prompt", "jailbreak", etc. |
-| Off-topic | Blocks clearly unrelated queries (jokes, recipes, geography) only if no FCA signals are present in the message |
+| Off-topic | 16 patterns block clearly unrelated queries only if no FCA signals are present in the message |
+
+Off-topic pattern categories (all guarded by `FCA_SIGNALS` absence check):
+- **Original**: jokes, poems, recipes, weather, sports, president, capital-of, translate, summarise-article
+- **General knowledge**: "what is the capital/population of…", "how does X work", science terms (photosynthesis, gravity, etc.)
+- **Coding/tech**: "write/debug a function", "python code/tutorial", etc.
+- **Creative writing**: "write a story/essay/cover letter/speech/blog"
+- **Personal/lifestyle**: "recommend a restaurant/hotel/movie", "plan my holiday"
+- **News/current events**: "latest news", "what happened in/at/to"
+- **Catch-all**: messages starting with `what is / what are / who is / explain / tell me about / how do I / how does` with no FCA signals — blocks the broadest category of unrelated questions with a single pattern
 
 Blocked messages receive the polite redirect as a streamed SSE response — no Gemini API call is made.
 
