@@ -209,6 +209,7 @@ const FCA_SIGNALS =
   /fca|nsm|firds|fitrs|short\s+sell|filing|isin|lei|prospectus|annual\s+report|disclosure|mifid|mifir|rns|holding|barclays|hsbc|lloyds|shell|vodafone|register|instrument|liquidity|threshold/i;
 
 const OFF_TOPIC_PATTERNS = [
+  // Original patterns
   /write\s+(me\s+)?(a\s+|an\s+)?poem/i,
   /tell\s+me\s+a\s+joke/i,
   /\b(recipe|weather\s+forecast|sports\s+score)\b/i,
@@ -216,6 +217,28 @@ const OFF_TOPIC_PATTERNS = [
   /capital\s+of\s+[a-z]+\?/i,
   /translate\s+(this|the\s+following)/i,
   /summarise\s+this\s+(article|text|url)/i,
+
+  // General knowledge / homework
+  /\bwhat\s+is\s+(the\s+)?(capital|population|currency|language|history)\s+of\b/i,
+  /\b(how\s+does|explain\s+how)\s+.{0,30}(work|function|happen)\b/i,
+  /\b(speed\s+of\s+light|theory\s+of\s+relativity|photosynthesis|gravity|evolution)\b/i,
+
+  // Coding / tech (unrelated to FCA)
+  /\b(write|debug|fix|refactor)\s+(me\s+)?(a\s+|an\s+|this\s+)?function\b/i,
+  /\b(python|javascript|java|c\+\+|sql|html|css)\s+(code|script|program|tutorial)\b/i,
+
+  // Creative writing
+  /\bwrite\s+(me\s+)?(a\s+|an\s+)?(story|essay|cover\s+letter|email\s+to|speech|blog)\b/i,
+
+  // Personal / lifestyle
+  /\b(recommend|suggest)\s+(a\s+|an\s+)?(restaurant|hotel|movie|book|gift)\b/i,
+  /\b(plan\s+my|book\s+a)\s+(holiday|trip|vacation|flight)\b/i,
+
+  // News / current events
+  /\b(latest\s+news|what\s+happened\s+(in|at|to))\b/i,
+
+  // Catch-all: generic question starters with no FCA signals
+  /^(what\s+is|what\s+are|who\s+is|who\s+are|explain|tell\s+me\s+about|how\s+do\s+i|how\s+does)\b/i,
 ];
 
 /**
