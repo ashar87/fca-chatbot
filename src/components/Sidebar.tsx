@@ -11,8 +11,6 @@ interface Props {
 export default function Sidebar({ activeSection, onSectionChange }: Props) {
   const [nsmOpen, setNsmOpen] = useState(true);
 
-  const isNsm = activeSection === "nsm-search" || activeSection === "nsm-about";
-
   return (
     <aside style={{ width: 220, flexShrink: 0 }}>
       {/* National Storage Mechanism section */}
