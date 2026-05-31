@@ -327,6 +327,23 @@ export async function POST(req: Request) {
         controller.enqueue(encoder.encode(`data: ${JSON.stringify({ text })}\n\n`));
       }
 
+      function sendStatus(text: string) {
+        controller.enqueue(encoder.encode(`data: ${JSON.stringify({ type: "status", text })}\n\n`));
+      }
+
+      function toolStatusLabel(toolName: string): string {
+        switch (toolName) {
+          case "search_nsm_by_company": return "Searching NSM filings…";
+          case "search_nsm_by_lei":     return "Searching NSM by LEI…";
+          case "search_nsm_by_content": return "Searching NSM content…";
+          case "fetch_pdf_summary":     return "Reading document…";
+          case "search_firds":          return "Looking up FIRDS instrument…";
+          case "search_fitrs":          return "Looking up FITRS data…";
+          case "get_short_positions":   return "Fetching short positions…";
+          default:                      return "Fetching data…";
+        }
+      }
+
       try {
         const model = genai.getGenerativeModel({
           model: "gemini-flash-latest",
@@ -345,12 +362,19 @@ export async function POST(req: Request) {
 
         // Agentic loop — Gemini may request multiple tool calls
         let currentMessage = lastMessage.content;
+        sendStatus("Thinking…");
         for (let turn = 0; turn < 5; turn++) {
           const result = await chat.sendMessage(currentMessage);
           const response = result.response;
 
           const functionCalls = response.functionCalls();
           if (functionCalls && functionCalls.length > 0) {
+            // Emit a status label for each tool call
+            const label = functionCalls.length === 1
+              ? toolStatusLabel(functionCalls[0].name)
+              : "Fetching data…";
+            sendStatus(label);
+
             // Execute all requested tool calls
             const toolResults = await Promise.all(
               functionCalls.map(async (fc) => {
@@ -369,6 +393,7 @@ export async function POST(req: Request) {
               })
             );
 
+            sendStatus("Processing results…");
             // Feed tool results back as a new turn
             currentMessage = toolResults as unknown as string;
             continue;

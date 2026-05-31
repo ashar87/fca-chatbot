@@ -44,6 +44,7 @@ export default function ChatWidget({ activeSection }: Props) {
   const [messages, setMessages] = useState<Message[]>([]);
   const [input, setInput] = useState("");
   const [streaming, setStreaming] = useState(false);
+  const [statusText, setStatusText] = useState("");
   const scrollRef = useRef<HTMLDivElement>(null);
   const abortRef = useRef<AbortController | null>(null);
 
@@ -96,8 +97,11 @@ export default function ChatWidget({ activeSection }: Props) {
             if (data === "[DONE]") break;
             try {
               const parsed = JSON.parse(data);
-              if (parsed.text) {
+              if (parsed.type === "status") {
+                setStatusText(parsed.text);
+              } else if (parsed.text) {
                 accumulated += parsed.text;
+                setStatusText("");
                 setMessages([...newMessages, { role: "assistant", content: accumulated }]);
               }
             } catch {
@@ -112,6 +116,7 @@ export default function ChatWidget({ activeSection }: Props) {
       }
     } finally {
       setStreaming(false);
+      setStatusText("");
     }
   }
 
@@ -182,42 +187,51 @@ export default function ChatWidget({ activeSection }: Props) {
               </div>
             )}
 
-            {messages.map((msg, i) => (
-              <div key={i} className={`flex ${msg.role === "user" ? "justify-end" : "justify-start"}`}>
-                <div
-                  className={`max-w-[90%] px-3 py-2 text-sm ${
-                    msg.role === "user" ? "text-white" : "text-gray-800"
-                  }`}
-                  style={{
-                    backgroundColor: msg.role === "user" ? "var(--fca-purple)" : "#f4f4f4",
-                    border: msg.role === "assistant" ? "1px solid #d0d0d0" : "none",
-                    borderRadius: 0,
-                  }}
-                >
-                  {msg.role === "assistant" ? (
-                    <div className="prose prose-sm max-w-none text-xs leading-relaxed">
-                      <ReactMarkdown>{msg.content || (streaming && i === messages.length - 1 ? "▌" : "")}</ReactMarkdown>
-                      {msg.content && !streaming && (
-                        <p className="text-[10px] text-gray-400 mt-2 border-t border-gray-200 pt-1">
-                          Not financial or regulatory advice. Verify at{" "}
-                          <a href="https://data.fca.org.uk" target="_blank" rel="noopener noreferrer">data.fca.org.uk</a>.
-                        </p>
-                      )}
-                    </div>
-                  ) : (
-                    msg.content
-                  )}
+            {messages.map((msg, i) => {
+              const isLastAssistant = msg.role === "assistant" && i === messages.length - 1;
+              const showStatus = isLastAssistant && streaming && statusText && !msg.content;
+              const showCursor = isLastAssistant && streaming && msg.content;
+              return (
+                <div key={i} className={`flex ${msg.role === "user" ? "justify-end" : "justify-start"}`}>
+                  <div
+                    className={`max-w-[90%] px-3 py-2 text-sm ${
+                      msg.role === "user" ? "text-white" : "text-gray-800"
+                    }`}
+                    style={{
+                      backgroundColor: msg.role === "user" ? "var(--fca-purple)" : "#f4f4f4",
+                      border: msg.role === "assistant" ? "1px solid #d0d0d0" : "none",
+                      borderRadius: 0,
+                    }}
+                  >
+                    {msg.role === "assistant" ? (
+                      <div className="prose prose-sm max-w-none text-xs leading-relaxed">
+                        {showStatus ? (
+                          <span className="inline-flex items-center gap-1.5 text-xs text-gray-500 animate-pulse">
+                            <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2} className="shrink-0">
+                              <circle cx="12" cy="12" r="10" />
+                              <path d="M12 6v6l4 2" />
+                            </svg>
+                            {statusText}
+                          </span>
+                        ) : (
+                          <>
+                            <ReactMarkdown>{msg.content + (showCursor ? "▌" : "")}</ReactMarkdown>
+                            {msg.content && !streaming && (
+                              <p className="text-[10px] text-gray-400 mt-2 border-t border-gray-200 pt-1">
+                                Not financial or regulatory advice. Verify at{" "}
+                                <a href="https://data.fca.org.uk" target="_blank" rel="noopener noreferrer">data.fca.org.uk</a>.
+                              </p>
+                            )}
+                          </>
+                        )}
+                      </div>
+                    ) : (
+                      msg.content
+                    )}
+                  </div>
                 </div>
-              </div>
-            ))}
-
-            {streaming && messages[messages.length - 1]?.role === "assistant" && messages[messages.length - 1]?.content === "" && (
-              <div className="flex justify-start">
-                <div className="px-3 py-2 text-xs text-gray-400 animate-pulse" style={{ background: "#f4f4f4", border: "1px solid #d0d0d0" }}>
-                  Thinking…
-                </div>
-              </div>
-            )}
+              );
+            })}
           </div>
 
           {/* Input */}
