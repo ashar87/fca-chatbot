@@ -412,12 +412,12 @@ export async function POST(req: Request) {
         const lastMessage = messages[messages.length - 1];
         const chat = model.startChat({ history });
 
-        // Agentic loop — Gemini may request multiple tool calls (max 3 turns)
+        // Agentic loop — Gemini may request multiple tool calls (max 4 turns)
         let currentMessage = lastMessage.content;
         sendStatus("Thinking…");
         let totalTurns = 0;
         let responseGenerated = false;
-        for (let turn = 0; turn < 3; turn++) {
+        for (let turn = 0; turn < 4; turn++) {
           totalTurns = turn + 1;
           console.log("[chat] gemini turn=%d ip=%s", turn + 1, ip);
           const turnStart = Date.now();

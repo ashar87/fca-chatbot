@@ -167,8 +167,21 @@ export async function searchNSMByCompany(params: {
   const hitsObj = data.hits as Record<string, unknown>;
   const total = (hitsObj?.total as Record<string, unknown>)?.value as number ?? 0;
   const hits: unknown[] = hitsObj?.hits as unknown[] ?? [];
-  if (total === 0) console.warn("[fca-tools] searchNSMByCompany zero_results company=%s", params.company);
-  else console.log("[fca-tools] searchNSMByCompany ok company=%s total=%d returned=%d", params.company, total, hits.length);
+
+  // Fallback: company_lei criterion may be blocked by Cloudflare — retry using document_content
+  if (total === 0) {
+    console.warn("[fca-tools] searchNSMByCompany zero_results company=%s — falling back to document_content", params.company);
+    return searchNSMByContent({
+      keywords: params.company,
+      filing_type: params.filing_type,
+      source: params.source,
+      date_from: params.date_from,
+      date_to: params.date_to,
+      page: params.page,
+    });
+  }
+
+  console.log("[fca-tools] searchNSMByCompany ok company=%s total=%d returned=%d", params.company, total, hits.length);
   return { total, filings: mapHitsToFilings(hits) };
 }
 
@@ -213,8 +226,21 @@ export async function searchNSMByLEI(params: {
   const hitsObj = data.hits as Record<string, unknown>;
   const total = (hitsObj?.total as Record<string, unknown>)?.value as number ?? 0;
   const hits: unknown[] = hitsObj?.hits as unknown[] ?? [];
-  if (total === 0) console.warn("[fca-tools] searchNSMByLEI zero_results lei=%s", params.lei);
-  else console.log("[fca-tools] searchNSMByLEI ok lei=%s total=%d returned=%d", params.lei, total, hits.length);
+
+  // Fallback: company_lei criterion may be blocked by Cloudflare — retry using document_content
+  if (total === 0) {
+    console.warn("[fca-tools] searchNSMByLEI zero_results lei=%s — falling back to document_content", params.lei);
+    return searchNSMByContent({
+      keywords: params.lei,
+      filing_type: params.filing_type,
+      source: params.source,
+      date_from: params.date_from,
+      date_to: params.date_to,
+      page: params.page,
+    });
+  }
+
+  console.log("[fca-tools] searchNSMByLEI ok lei=%s total=%d returned=%d", params.lei, total, hits.length);
   return { total, filings: mapHitsToFilings(hits) };
 }
 
