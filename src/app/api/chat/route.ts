@@ -51,6 +51,7 @@ Keep clarifying questions short. Offer options so the user can reply with a sing
 7. Mention the total number of matching records when returning NSM results (e.g. "Found 19,985 filings — showing the 50 most recent").
 8. Never provide investment, legal, or regulatory advice.
 9. Only call fetch_pdf_summary when the user explicitly asks for content FROM a document (e.g. "summarise this", "what does it say about X", "extract the risk section"). Do NOT fetch PDFs when simply returning search results — show the list of results with links and wait for the user to ask for more detail.
+10. After receiving tool results, ALWAYS write your response immediately — do not call another tool unless the user explicitly asks for more data. One tool call per user message is almost always sufficient. Never call the same tool twice in a row.
 
 ## Security & scope
 - You only answer questions about the FCA Data Portal and its data (NSM, FIRDS, FITRS, Short Selling Register).
@@ -374,11 +375,12 @@ export async function POST(req: Request) {
         const lastMessage = messages[messages.length - 1];
         const chat = model.startChat({ history });
 
-        // Agentic loop — Gemini may request multiple tool calls
+        // Agentic loop — Gemini may request multiple tool calls (max 3 turns)
         let currentMessage = lastMessage.content;
         sendStatus("Thinking…");
         let totalTurns = 0;
-        for (let turn = 0; turn < 5; turn++) {
+        let responseGenerated = false;
+        for (let turn = 0; turn < 3; turn++) {
           totalTurns = turn + 1;
           console.log("[chat] gemini turn=%d ip=%s", turn + 1, ip);
           const turnStart = Date.now();
@@ -450,14 +452,16 @@ export async function POST(req: Request) {
               send(chunk);
               await new Promise((r) => setTimeout(r, 10));
             }
+            responseGenerated = true;
           } else {
             console.warn("[chat] empty_response turn=%d — gemini returned no text and no tool calls ip=%s", turn + 1, ip);
           }
           break;
         }
 
-        if (totalTurns >= 5) {
-          console.warn("[chat] max_turns_reached turns=%d totalElapsed=%dms ip=%s — loop hit cap without final response", totalTurns, Date.now() - reqStart, ip);
+        if (!responseGenerated) {
+          console.warn("[chat] max_turns_reached turns=%d totalElapsed=%dms ip=%s — no text response generated", totalTurns, Date.now() - reqStart, ip);
+          send("I retrieved some data but wasn't able to summarise it. Please try rephrasing your question or ask for something more specific.");
         }
       } catch (err: unknown) {
         const msg = err instanceof Error ? err.message : "Unknown error";
@@ -475,6 +479,8 @@ export async function POST(req: Request) {
       "Content-Type": "text/event-stream",
       "Cache-Control": "no-cache",
       Connection: "keep-alive",
+      "X-Accel-Buffering": "no",   // Prevent nginx/Vercel edge from buffering SSE frames
+      "Transfer-Encoding": "chunked",
     },
   });
 }
