@@ -4,11 +4,6 @@
  * robots.txt is respected — these are the same calls a browser makes when using the portal.
  */
 
-import { execFile } from "child_process";
-import { promisify } from "util";
-
-const execFileAsync = promisify(execFile);
-
 const FCA_BASE = "https://data.fca.org.uk";
 const FCA_API_BASE = "https://api.data.fca.org.uk";
 
@@ -39,63 +34,46 @@ function nsmCacheSet(key: string, data: { total: number; filings: NSMFiling[] })
 }
 
 /**
- * The NSM search endpoint (fca-nsm-searchdata) is protected by Cloudflare Bot Management
- * which checks the TLS/JA3 fingerprint. Node.js has a distinct fingerprint that gets blocked,
- * but curl passes. This helper spawns curl for POST requests to the FCA API.
+ * POST to the FCA API using native fetch.
+ * The NSM endpoint is protected by Cloudflare Bot Management — when blocked it returns
+ * a 200 with took<10ms and 0 results rather than a real Elasticsearch response.
+ * Results are cached in nsmCache to avoid repeated blocked calls.
  */
-/**
- * POST to the FCA API using curl instead of Node.js fetch.
- * curl has a browser-like TLS fingerprint that passes Cloudflare Bot Management;
- * Node.js fetch has a distinct fingerprint that gets soft-blocked (200 with 0 results).
- */
-async function fcaPost(url: string, body: unknown, attempt = 1): Promise<unknown> {
+async function fcaPost(url: string, body: unknown): Promise<unknown> {
   const start = Date.now();
-  const bodyStr = JSON.stringify(body);
-
-  let stdout: string;
+  let res: Response;
   try {
-    const result = await execFileAsync("curl", [
-      "--silent",
-      "--request", "POST",
-      "--url", url,
-      "--header", "Content-Type: application/json",
-      "--header", "Accept: application/json, text/plain, */*",
-      "--header", "Origin: https://data.fca.org.uk",
-      "--header", "Referer: https://data.fca.org.uk/",
-      "--header", "User-Agent: Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
-      "--data-raw", bodyStr,
-      "--compressed",
-      "--max-time", "15",
-    ]);
-    stdout = result.stdout;
+    res = await fetch(url, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Accept: "application/json, text/plain, */*",
+        Origin: "https://data.fca.org.uk",
+        Referer: "https://data.fca.org.uk/",
+        "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
+      },
+      body: JSON.stringify(body),
+    });
   } catch (err) {
-    console.error("[fca-tools] fcaPost curl_error url=%s error=%s elapsed=%dms", url, (err as Error).message, Date.now() - start);
+    console.error("[fca-tools] fcaPost fetch_error url=%s error=%s", url, (err as Error).message);
     return null;
   }
-
+  if (!res.ok) {
+    console.error("[fca-tools] fcaPost http_error url=%s status=%d elapsed=%dms", url, res.status, Date.now() - start);
+    return null;
+  }
+  const text = await res.text();
   let parsed: unknown;
   try {
-    parsed = JSON.parse(stdout);
+    parsed = JSON.parse(text);
   } catch {
-    console.error("[fca-tools] fcaPost json_parse_error url=%s body=%s", url, stdout.slice(0, 200));
+    console.error("[fca-tools] fcaPost json_parse_error url=%s body=%s", url, text.slice(0, 200));
     return null;
   }
-
   const p = parsed as Record<string, unknown>;
   const took = p?.took as number | undefined;
-  const totalValue = ((p?.hits as Record<string, unknown>)?.total as Record<string, unknown>)?.value;
-
-  // Still detect soft-block in case curl also gets throttled — retry once with a short delay
-  const isSoftBlock = typeof took === "number" && took < 10 && totalValue === 0;
-  if (isSoftBlock && attempt < 3) {
-    const delay = attempt * 1000;
-    console.warn("[fca-tools] fcaPost soft_block took=%dms attempt=%d delay=%dms url=%s", took, attempt, delay, url);
-    await new Promise((r) => setTimeout(r, delay));
-    return fcaPost(url, body, attempt + 1);
-  }
-
-  console.log("[fca-tools] fcaPost ok elapsed=%dms took=%dms attempt=%d bodyPreview=%s",
-    Date.now() - start, took ?? -1, attempt, stdout.slice(0, 200).replace(/\n/g, " "));
+  console.log("[fca-tools] fcaPost ok elapsed=%dms took=%dms bodyPreview=%s",
+    Date.now() - start, took ?? -1, text.slice(0, 200).replace(/\n/g, " "));
   return parsed;
 }
 
@@ -227,20 +205,8 @@ export async function searchNSMByCompany(params: {
   const total = (hitsObj?.total as Record<string, unknown>)?.value as number ?? 0;
   const hits: unknown[] = hitsObj?.hits as unknown[] ?? [];
 
-  // Fallback: company_lei criterion may be blocked by Cloudflare — retry using document_content
-  if (total === 0) {
-    console.warn("[fca-tools] searchNSMByCompany zero_results company=%s — falling back to document_content", params.company);
-    return searchNSMByContent({
-      keywords: params.company,
-      filing_type: params.filing_type,
-      source: params.source,
-      date_from: params.date_from,
-      date_to: params.date_to,
-      page: params.page,
-    });
-  }
-
-  console.log("[fca-tools] searchNSMByCompany ok company=%s total=%d returned=%d", params.company, total, hits.length);
+  if (total === 0) console.warn("[fca-tools] searchNSMByCompany zero_results company=%s", params.company);
+  else console.log("[fca-tools] searchNSMByCompany ok company=%s total=%d returned=%d", params.company, total, hits.length);
   const result = { total, filings: mapHitsToFilings(hits) };
   nsmCacheSet(cacheKey, result);
   return result;
@@ -292,20 +258,8 @@ export async function searchNSMByLEI(params: {
   const total = (hitsObj?.total as Record<string, unknown>)?.value as number ?? 0;
   const hits: unknown[] = hitsObj?.hits as unknown[] ?? [];
 
-  // Fallback: company_lei criterion may be blocked by Cloudflare — retry using document_content
-  if (total === 0) {
-    console.warn("[fca-tools] searchNSMByLEI zero_results lei=%s — falling back to document_content", params.lei);
-    return searchNSMByContent({
-      keywords: params.lei,
-      filing_type: params.filing_type,
-      source: params.source,
-      date_from: params.date_from,
-      date_to: params.date_to,
-      page: params.page,
-    });
-  }
-
-  console.log("[fca-tools] searchNSMByLEI ok lei=%s total=%d returned=%d", params.lei, total, hits.length);
+  if (total === 0) console.warn("[fca-tools] searchNSMByLEI zero_results lei=%s", params.lei);
+  else console.log("[fca-tools] searchNSMByLEI ok lei=%s total=%d returned=%d", params.lei, total, hits.length);
   const result = { total, filings: mapHitsToFilings(hits) };
   nsmCacheSet(cacheKey, result);
   return result;
