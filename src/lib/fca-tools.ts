@@ -13,17 +13,28 @@ const FCA_API_BASE = "https://api.data.fca.org.uk";
  * but curl passes. This helper spawns curl for POST requests to the FCA API.
  */
 async function fcaPost(url: string, body: unknown): Promise<unknown> {
-  const res = await fetch(url, {
-    method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-      Accept: "application/json, text/plain, */*",
-      Origin: "https://data.fca.org.uk",
-      Referer: "https://data.fca.org.uk/",
-    },
-    body: JSON.stringify(body),
-  });
-  if (!res.ok) return null;
+  const start = Date.now();
+  let res: Response;
+  try {
+    res = await fetch(url, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Accept: "application/json, text/plain, */*",
+        Origin: "https://data.fca.org.uk",
+        Referer: "https://data.fca.org.uk/",
+      },
+      body: JSON.stringify(body),
+    });
+  } catch (err) {
+    console.error("[fca-tools] fcaPost fetch_error url=%s error=%s", url, (err as Error).message);
+    return null;
+  }
+  if (!res.ok) {
+    console.error("[fca-tools] fcaPost http_error url=%s status=%d elapsed=%dms", url, res.status, Date.now() - start);
+    return null;
+  }
+  console.log("[fca-tools] fcaPost ok url=%s status=%d elapsed=%dms", url, res.status, Date.now() - start);
   return res.json();
 }
 
@@ -143,10 +154,15 @@ export async function searchNSMByCompany(params: {
   };
 
   const data = await fcaPost(`${FCA_API_BASE}/search?index=fca-nsm-searchdata`, body) as Record<string, unknown> | null;
-  if (!data) return { total: 0, filings: [] };
+  if (!data) {
+    console.warn("[fca-tools] searchNSMByCompany no_data company=%s", params.company);
+    return { total: 0, filings: [] };
+  }
   const hitsObj = data.hits as Record<string, unknown>;
   const total = (hitsObj?.total as Record<string, unknown>)?.value as number ?? 0;
   const hits: unknown[] = hitsObj?.hits as unknown[] ?? [];
+  if (total === 0) console.warn("[fca-tools] searchNSMByCompany zero_results company=%s", params.company);
+  else console.log("[fca-tools] searchNSMByCompany ok company=%s total=%d returned=%d", params.company, total, hits.length);
   return { total, filings: mapHitsToFilings(hits) };
 }
 
@@ -184,10 +200,15 @@ export async function searchNSMByLEI(params: {
   };
 
   const data = await fcaPost(`${FCA_API_BASE}/search?index=fca-nsm-searchdata`, body) as Record<string, unknown> | null;
-  if (!data) return { total: 0, filings: [] };
+  if (!data) {
+    console.warn("[fca-tools] searchNSMByLEI no_data lei=%s", params.lei);
+    return { total: 0, filings: [] };
+  }
   const hitsObj = data.hits as Record<string, unknown>;
   const total = (hitsObj?.total as Record<string, unknown>)?.value as number ?? 0;
   const hits: unknown[] = hitsObj?.hits as unknown[] ?? [];
+  if (total === 0) console.warn("[fca-tools] searchNSMByLEI zero_results lei=%s", params.lei);
+  else console.log("[fca-tools] searchNSMByLEI ok lei=%s total=%d returned=%d", params.lei, total, hits.length);
   return { total, filings: mapHitsToFilings(hits) };
 }
 
@@ -226,10 +247,15 @@ export async function searchNSMByContent(params: {
   };
 
   const data = await fcaPost(`${FCA_API_BASE}/search?index=fca-nsm-searchdata`, body) as Record<string, unknown> | null;
-  if (!data) return { total: 0, filings: [] };
+  if (!data) {
+    console.warn("[fca-tools] searchNSMByContent no_data keywords=%s", params.keywords);
+    return { total: 0, filings: [] };
+  }
   const hitsObj = data.hits as Record<string, unknown>;
   const total = (hitsObj?.total as Record<string, unknown>)?.value as number ?? 0;
   const hits: unknown[] = hitsObj?.hits as unknown[] ?? [];
+  if (total === 0) console.warn("[fca-tools] searchNSMByContent zero_results keywords=%s", params.keywords);
+  else console.log("[fca-tools] searchNSMByContent ok keywords=%s total=%d returned=%d", params.keywords, total, hits.length);
   return { total, filings: mapHitsToFilings(hits) };
 }
 
@@ -252,11 +278,20 @@ export async function searchNSM(params: {
 }
 
 export async function fetchPDFSummary(pdfUrl: string, extractionPrompt?: string): Promise<string> {
-  const res = await fetch(pdfUrl, {
-    headers: { "User-Agent": "FCA-Demo-Bot/1.0" },
-  });
-  if (!res.ok) return `Could not fetch PDF at ${pdfUrl} (HTTP ${res.status})`;
+  const start = Date.now();
+  let res: Response;
+  try {
+    res = await fetch(pdfUrl, { headers: { "User-Agent": "FCA-Demo-Bot/1.0" } });
+  } catch (err) {
+    console.error("[fca-tools] fetchPDFSummary fetch_error url=%s error=%s", pdfUrl, (err as Error).message);
+    return `Could not fetch PDF at ${pdfUrl}: network error`;
+  }
+  if (!res.ok) {
+    console.error("[fca-tools] fetchPDFSummary http_error url=%s status=%d", pdfUrl, res.status);
+    return `Could not fetch PDF at ${pdfUrl} (HTTP ${res.status})`;
+  }
   const buffer = await res.arrayBuffer();
+  console.log("[fca-tools] fetchPDFSummary downloaded url=%s sizeKB=%d elapsed=%dms", pdfUrl, Math.round(buffer.byteLength / 1024), Date.now() - start);
 
   try {
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -265,6 +300,7 @@ export async function fetchPDFSummary(pdfUrl: string, extractionPrompt?: string)
     const fullText = result.text;
     const totalChars = fullText.length;
     const LIMIT = 50_000;
+    console.log("[fca-tools] fetchPDFSummary parsed url=%s pages=%d totalChars=%d elapsed=%dms", pdfUrl, result.numpages, totalChars, Date.now() - start);
 
     // If the caller specified what to look for, try to find the most relevant
     // section by scanning for the keyword in the full text and returning a
@@ -272,10 +308,12 @@ export async function fetchPDFSummary(pdfUrl: string, extractionPrompt?: string)
     if (extractionPrompt) {
       const needle = extractionPrompt.toLowerCase();
       const idx = fullText.toLowerCase().indexOf(needle);
-      if (idx !== -1) {
-        const start = Math.max(0, idx - 500);
-        const end = Math.min(totalChars, start + LIMIT);
-        const excerpt = fullText.slice(start, end);
+      if (idx === -1) {
+        console.warn("[fca-tools] fetchPDFSummary keyword_not_found url=%s prompt=%s", pdfUrl, extractionPrompt);
+      } else {
+        const start2 = Math.max(0, idx - 500);
+        const end = Math.min(totalChars, start2 + LIMIT);
+        const excerpt = fullText.slice(start2, end);
         return `[PDF: ${result.numpages} pages, ${totalChars.toLocaleString()} chars total — showing ${excerpt.length.toLocaleString()} chars from match for "${extractionPrompt}"]\n\n${excerpt}`;
       }
     }
@@ -283,7 +321,8 @@ export async function fetchPDFSummary(pdfUrl: string, extractionPrompt?: string)
     // Default: return from the beginning up to the limit
     const excerpt = fullText.slice(0, LIMIT);
     return `[PDF: ${result.numpages} pages, ${totalChars.toLocaleString()} chars total — showing first ${excerpt.length.toLocaleString()} chars]\n\n${excerpt}`;
-  } catch {
+  } catch (err) {
+    console.error("[fca-tools] fetchPDFSummary parse_error url=%s error=%s", pdfUrl, (err as Error).message);
     return `PDF text extraction failed. Direct link: ${pdfUrl}`;
   }
 }
@@ -310,15 +349,21 @@ export async function searchFIRDS(params: {
   if (params.mic) url.searchParams.set("mic", params.mic);
   url.searchParams.set("pageSize", "20");
 
+  const firdsStart = Date.now();
   const res = await fetch(url.toString(), {
     headers: { Accept: "application/json", "User-Agent": "FCA-Demo-Bot/1.0" },
     next: { revalidate: 3600 * 24 },
   });
 
-  if (!res.ok) return searchFIRDSFallback(params);
+  if (!res.ok) {
+    console.warn("[fca-tools] searchFIRDS http_error status=%d isin=%s elapsed=%dms — trying fallback", res.status, params.isin, Date.now() - firdsStart);
+    return searchFIRDSFallback(params);
+  }
 
   const data = await res.json();
   const items: unknown[] = data?.content ?? data?.items ?? (Array.isArray(data) ? data : []);
+  if (items.length === 0) console.warn("[fca-tools] searchFIRDS zero_results isin=%s name=%s elapsed=%dms", params.isin, params.instrument_name, Date.now() - firdsStart);
+  else console.log("[fca-tools] searchFIRDS ok isin=%s results=%d elapsed=%dms", params.isin, items.length, Date.now() - firdsStart);
   return items.slice(0, 20).map((item: unknown) => {
     const r = item as Record<string, unknown>;
     const cfi = String(r.cfiCode ?? r.cfi ?? "");
@@ -383,18 +428,25 @@ export interface FITRSRecord {
 }
 
 export async function searchFITRS(isin: string): Promise<FITRSRecord | null> {
+  const fitrsStart = Date.now();
   const url = `${FCA_BASE}/api/proxy/fitrs/bonds/${encodeURIComponent(isin)}`;
   const res = await fetch(url, {
     headers: { Accept: "application/json", "User-Agent": "FCA-Demo-Bot/1.0" },
     next: { revalidate: 3600 * 24 * 7 },
   });
 
-  if (!res.ok) return searchFITRSFallback(isin);
+  if (!res.ok) {
+    console.warn("[fca-tools] searchFITRS http_error status=%d isin=%s elapsed=%dms — trying equities fallback", res.status, isin, Date.now() - fitrsStart);
+    return searchFITRSFallback(isin);
+  }
 
   const data = await res.json();
   const r = (Array.isArray(data) ? data[0] : data) as Record<string, unknown> | undefined;
-  if (!r) return null;
-
+  if (!r) {
+    console.warn("[fca-tools] searchFITRS no_record isin=%s elapsed=%dms", isin, Date.now() - fitrsStart);
+    return null;
+  }
+  console.log("[fca-tools] searchFITRS ok isin=%s elapsed=%dms", isin, Date.now() - fitrsStart);
   return {
     isin: String(r.isin ?? isin),
     instrumentName: String(r.instrumentFullName ?? r.name ?? isin),
@@ -447,8 +499,13 @@ export async function getShortPositions(params: {
 }): Promise<ShortPosition[]> {
   // Fetch and cache the daily CSV
   if (!cachedPositions || Date.now() - cacheTime > CACHE_TTL) {
+    console.log("[fca-tools] getShortPositions cache_miss — fetching fresh data");
     cachedPositions = await fetchShortSellingCSV();
     cacheTime = Date.now();
+    console.log("[fca-tools] getShortPositions cache_loaded count=%d", cachedPositions.length);
+    if (cachedPositions.length === 0) console.warn("[fca-tools] getShortPositions empty_dataset — all SSR endpoints returned no data");
+  } else {
+    console.log("[fca-tools] getShortPositions cache_hit count=%d", cachedPositions.length);
   }
 
   let results = cachedPositions;

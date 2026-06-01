@@ -280,7 +280,10 @@ function checkRateLimit(ip: string): boolean {
 
 export async function POST(req: Request) {
   const ip = req.headers.get("x-forwarded-for") ?? "unknown";
+  const reqStart = Date.now();
+
   if (!checkRateLimit(ip)) {
+    console.warn("[chat] rate_limited ip=%s", ip);
     return new Response(JSON.stringify({ error: "Rate limit exceeded. Please wait a minute and try again." }), {
       status: 429,
       headers: { "Content-Type": "application/json" },
@@ -288,6 +291,7 @@ export async function POST(req: Request) {
   }
 
   if (!process.env.GEMINI_API_KEY) {
+    console.error("[chat] missing GEMINI_API_KEY");
     return new Response(JSON.stringify({ error: "GEMINI_API_KEY is not configured. Add it to .env.local." }), {
       status: 500,
       headers: { "Content-Type": "application/json" },
@@ -298,15 +302,25 @@ export async function POST(req: Request) {
   try {
     body = await req.json();
   } catch {
+    console.error("[chat] invalid request body ip=%s", ip);
     return new Response(JSON.stringify({ error: "Invalid request body" }), { status: 400 });
   }
 
   const { messages } = body;
+  const lastMessage = messages[messages.length - 1];
+
+  console.log(
+    "[chat] request ip=%s msgCount=%d lastMsgLen=%d preview=%s",
+    ip,
+    messages.length,
+    lastMessage?.content?.length ?? 0,
+    lastMessage?.content?.slice(0, 80).replace(/\n/g, " ") ?? ""
+  );
 
   // Guard: check the latest user message before touching Gemini
-  const lastMessage = messages[messages.length - 1];
   const blocked = lastMessage?.role === "user" ? guardInput(lastMessage.content) : null;
   if (blocked) {
+    console.log("[chat] blocked reason=%s ip=%s", blocked, ip);
     const encoder = new TextEncoder();
     const stream = new ReadableStream({
       start(controller) {
@@ -363,12 +377,20 @@ export async function POST(req: Request) {
         // Agentic loop — Gemini may request multiple tool calls
         let currentMessage = lastMessage.content;
         sendStatus("Thinking…");
+        let totalTurns = 0;
         for (let turn = 0; turn < 5; turn++) {
+          totalTurns = turn + 1;
+          console.log("[chat] gemini turn=%d ip=%s", turn + 1, ip);
+          const turnStart = Date.now();
           const result = await chat.sendMessage(currentMessage);
           const response = result.response;
+          console.log("[chat] gemini turn=%d elapsed=%dms ip=%s", turn + 1, Date.now() - turnStart, ip);
 
           const functionCalls = response.functionCalls();
           if (functionCalls && functionCalls.length > 0) {
+            const toolNames = functionCalls.map((fc) => fc.name).join(", ");
+            console.log("[chat] tool_calls turn=%d tools=[%s] ip=%s", turn + 1, toolNames, ip);
+
             // Emit a status label for each tool call
             const label = functionCalls.length === 1
               ? toolStatusLabel(functionCalls[0].name)
@@ -378,11 +400,25 @@ export async function POST(req: Request) {
             // Execute all requested tool calls
             const toolResults = await Promise.all(
               functionCalls.map(async (fc) => {
+                const toolStart = Date.now();
                 let output: unknown;
                 try {
                   output = await executeTool(fc.name, fc.args as Record<string, unknown>);
+                  const resultSize = JSON.stringify(output).length;
+                  if (resultSize > 80_000) {
+                    console.warn("[chat] tool_large_result tool=%s resultSize=%d — may exceed token limit ip=%s", fc.name, resultSize, ip);
+                  }
+                  console.log(
+                    "[chat] tool_ok tool=%s elapsed=%dms resultSize=%d ip=%s",
+                    fc.name,
+                    Date.now() - toolStart,
+                    resultSize,
+                    ip
+                  );
                 } catch (err) {
-                  output = { error: err instanceof Error ? err.message : "Tool execution failed" };
+                  const errMsg = err instanceof Error ? err.message : "Tool execution failed";
+                  console.error("[chat] tool_error tool=%s error=%s ip=%s", fc.name, errMsg, ip);
+                  output = { error: errMsg };
                 }
                 return {
                   functionResponse: {
@@ -402,16 +438,30 @@ export async function POST(req: Request) {
           // Stream the final text response word by word
           const text = response.text();
           if (text) {
+            console.log(
+              "[chat] response_ok turns=%d totalElapsed=%dms responseLen=%d ip=%s",
+              totalTurns,
+              Date.now() - reqStart,
+              text.length,
+              ip
+            );
             const words = text.split(/(\s+)/);
             for (const chunk of words) {
               send(chunk);
               await new Promise((r) => setTimeout(r, 10));
             }
+          } else {
+            console.warn("[chat] empty_response turn=%d — gemini returned no text and no tool calls ip=%s", turn + 1, ip);
           }
           break;
         }
+
+        if (totalTurns >= 5) {
+          console.warn("[chat] max_turns_reached turns=%d totalElapsed=%dms ip=%s — loop hit cap without final response", totalTurns, Date.now() - reqStart, ip);
+        }
       } catch (err: unknown) {
         const msg = err instanceof Error ? err.message : "Unknown error";
+        console.error("[chat] fatal_error error=%s elapsed=%dms ip=%s", msg, Date.now() - reqStart, ip);
         send(`\n\nError: ${msg}`);
       } finally {
         controller.enqueue(encoder.encode("data: [DONE]\n\n"));
