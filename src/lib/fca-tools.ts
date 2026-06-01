@@ -34,8 +34,14 @@ async function fcaPost(url: string, body: unknown): Promise<unknown> {
     console.error("[fca-tools] fcaPost http_error url=%s status=%d elapsed=%dms", url, res.status, Date.now() - start);
     return null;
   }
-  console.log("[fca-tools] fcaPost ok url=%s status=%d elapsed=%dms", url, res.status, Date.now() - start);
-  return res.json();
+  const text = await res.text();
+  console.log("[fca-tools] fcaPost ok url=%s status=%d elapsed=%dms bodyPreview=%s", url, res.status, Date.now() - start, text.slice(0, 300).replace(/\n/g, " "));
+  try {
+    return JSON.parse(text);
+  } catch {
+    console.error("[fca-tools] fcaPost json_parse_error url=%s body=%s", url, text.slice(0, 300));
+    return null;
+  }
 }
 
 // ─── NSM ──────────────────────────────────────────────────────────────────────
