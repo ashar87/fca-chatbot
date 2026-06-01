@@ -1,12 +1,7 @@
-import {
-  GoogleGenerativeAI,
-  SchemaType,
-  type Content,
-  type FunctionDeclaration,
-} from "@google/generative-ai";
+import { GoogleGenAI, Type, type Part, type FunctionDeclaration } from "@google/genai";
 import { searchNSMByCompany, searchNSMByLEI, searchNSMByContent, fetchPDFSummary, searchFIRDS, searchFITRS, getShortPositions } from "@/lib/fca-tools";
 
-const genai = new GoogleGenerativeAI(process.env.GEMINI_API_KEY ?? "");
+const ai = new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY ?? "" });
 
 const REDIRECT_MESSAGE =
   "I can only help with questions about the FCA Data Portal — try asking about NSM filings, FIRDS instruments, FITRS transparency data, or short selling positions.";
@@ -88,19 +83,19 @@ Use this when the user asks about a company's filings, disclosures, or announcem
 Returns: a list of matching disclosures with headline, filing type, date, and document link.
 The total count of matched records is also returned — mention it if the user asks how many filings exist.`,
     parameters: {
-      type: SchemaType.OBJECT,
+      type: Type.OBJECT,
       properties: {
         company: {
-          type: SchemaType.STRING,
+          type: Type.STRING,
           description: "Company name to search for (e.g. 'Barclays', 'HSBC', 'Shell'). Do not pass a LEI code here — use search_nsm_by_lei for that.",
         },
         filing_type: {
-          type: SchemaType.STRING,
+          type: Type.STRING,
           description: "Optional filing type filter. Accepted values: 'Annual Report', 'Prospectus', 'Circular', 'Holding(s) in Company', 'Form 8.3', 'Form 8.5', 'Admission to Trading', 'Final Terms', 'Supplementary Prospectus', 'Irish Takeover', 'Net Asset Value', 'Miscellaneous'.",
         },
-        date_from: { type: SchemaType.STRING, description: dateFromDesc() },
-        date_to: { type: SchemaType.STRING, description: dateToDesc() },
-        page: { type: SchemaType.NUMBER, description: "Optional page number for pagination (0-indexed, each page returns 50 results)" },
+        date_from: { type: Type.STRING, description: dateFromDesc() },
+        date_to: { type: Type.STRING, description: dateToDesc() },
+        page: { type: Type.NUMBER, description: "Optional page number for pagination (0-indexed, each page returns 50 results)" },
       },
       required: ["company"],
     },
@@ -111,19 +106,19 @@ The total count of matched records is also returned — mention it if the user a
 Use this when the user provides a LEI directly, or when you have resolved a company name to a LEI in a prior step and want exact results without text-match noise.
 A LEI-based search is always more precise than a name search — prefer it when the LEI is known.`,
     parameters: {
-      type: SchemaType.OBJECT,
+      type: Type.OBJECT,
       properties: {
         lei: {
-          type: SchemaType.STRING,
+          type: Type.STRING,
           description: "The 20-character LEI code, e.g. '213800LBQA1Y9L22JB70'",
         },
         filing_type: {
-          type: SchemaType.STRING,
+          type: Type.STRING,
           description: "Optional filing type filter (same values as search_nsm_by_company).",
         },
-        date_from: { type: SchemaType.STRING, description: dateFromDesc() },
-        date_to: { type: SchemaType.STRING, description: dateToDesc() },
-        page: { type: SchemaType.NUMBER, description: "Optional page number (0-indexed)" },
+        date_from: { type: Type.STRING, description: dateFromDesc() },
+        date_to: { type: Type.STRING, description: dateToDesc() },
+        page: { type: Type.NUMBER, description: "Optional page number (0-indexed)" },
       },
       required: ["lei"],
     },
@@ -134,19 +129,19 @@ A LEI-based search is always more precise than a name search — prefer it when 
 Use this when the user asks about a topic or concept rather than a specific company — e.g. "find documents mentioning climate risk", "search for filings about remuneration policy", "show prospectuses containing the word 'restructuring'".
 Do NOT use this to find a company's own filings — use search_nsm_by_company for that.`,
     parameters: {
-      type: SchemaType.OBJECT,
+      type: Type.OBJECT,
       properties: {
         keywords: {
-          type: SchemaType.STRING,
+          type: Type.STRING,
           description: "Keywords or phrase to search for inside document content",
         },
         filing_type: {
-          type: SchemaType.STRING,
+          type: Type.STRING,
           description: "Optional filing type filter (same values as search_nsm_by_company).",
         },
-        date_from: { type: SchemaType.STRING, description: dateFromDesc() },
-        date_to: { type: SchemaType.STRING, description: dateToDesc() },
-        page: { type: SchemaType.NUMBER, description: "Optional page number (0-indexed)" },
+        date_from: { type: Type.STRING, description: dateFromDesc() },
+        date_to: { type: Type.STRING, description: dateToDesc() },
+        page: { type: Type.NUMBER, description: "Optional page number (0-indexed)" },
       },
       required: ["keywords"],
     },
@@ -159,10 +154,10 @@ Do NOT call this when simply listing or returning search results — in that cas
 The tool returns up to 50,000 characters. If extraction_prompt is provided, it locates the first match in the full document and returns the surrounding text — always set this to the topic the user is asking about.
 After receiving the extracted text, answer the user's question directly using that content.`,
     parameters: {
-      type: SchemaType.OBJECT,
+      type: Type.OBJECT,
       properties: {
-        url: { type: SchemaType.STRING, description: "The full public URL of the PDF document (must start with https://data.fca.org.uk/artefacts/)" },
-        extraction_prompt: { type: SchemaType.STRING, description: "Keywords describing what to extract — e.g. 'key risks', 'revenue', 'directors', 'capital requirements'. The tool will scan the document and return text around the first match." },
+        url: { type: Type.STRING, description: "The full public URL of the PDF document (must start with https://data.fca.org.uk/artefacts/)" },
+        extraction_prompt: { type: Type.STRING, description: "Keywords describing what to extract — e.g. 'key risks', 'revenue', 'directors', 'capital requirements'. The tool will scan the document and return text around the first match." },
       },
       required: ["url", "extraction_prompt"],
     },
@@ -171,11 +166,11 @@ After receiving the extracted text, answer the user's question directly using th
     name: "search_firds",
     description: "Search UK FIRDS for financial instrument reference data. Returns instrument details, CFI code, MIC, and MiFIR reportability.",
     parameters: {
-      type: SchemaType.OBJECT,
+      type: Type.OBJECT,
       properties: {
-        isin: { type: SchemaType.STRING, description: "ISIN code (e.g. GB0002875804)" },
-        instrument_name: { type: SchemaType.STRING, description: "Optional: partial instrument or company name" },
-        mic: { type: SchemaType.STRING, description: "Optional: market identifier code" },
+        isin: { type: Type.STRING, description: "ISIN code (e.g. GB0002875804)" },
+        instrument_name: { type: Type.STRING, description: "Optional: partial instrument or company name" },
+        mic: { type: Type.STRING, description: "Optional: market identifier code" },
       },
     },
   },
@@ -183,9 +178,9 @@ After receiving the extracted text, answer the user's question directly using th
     name: "search_fitrs",
     description: "Look up MiFID II transparency data from UK FITRS for an instrument — liquidity classification, LIS threshold, SSTI threshold.",
     parameters: {
-      type: SchemaType.OBJECT,
+      type: Type.OBJECT,
       properties: {
-        isin: { type: SchemaType.STRING, description: "ISIN code to look up" },
+        isin: { type: Type.STRING, description: "ISIN code to look up" },
       },
       required: ["isin"],
     },
@@ -194,10 +189,10 @@ After receiving the extracted text, answer the user's question directly using th
     name: "get_short_positions",
     description: "Query the FCA Short Selling Register for disclosed net short positions.",
     parameters: {
-      type: SchemaType.OBJECT,
+      type: Type.OBJECT,
       properties: {
-        issuer_name: { type: SchemaType.STRING, description: "Optional: company or issuer name to filter by" },
-        above_threshold: { type: SchemaType.NUMBER, description: "Optional: only return positions at or above this % (e.g. 0.5)" },
+        issuer_name: { type: Type.STRING, description: "Optional: company or issuer name to filter by" },
+        above_threshold: { type: Type.NUMBER, description: "Optional: only return positions at or above this % (e.g. 0.5)" },
       },
     },
   },
@@ -401,23 +396,25 @@ export async function POST(req: Request) {
       }
 
       try {
-        const model = genai.getGenerativeModel({
-          model: "gemini-3.1-flash-lite",
-          systemInstruction: SYSTEM_PROMPT,
-          tools: [{ functionDeclarations: TOOL_DECLARATIONS }],
-        });
-
         // Convert message history to Gemini Content format
-        const history: Content[] = messages.slice(0, -1).map((m) => ({
+        const history = messages.slice(0, -1).map((m) => ({
           role: m.role === "assistant" ? "model" : "user",
           parts: [{ text: m.content }],
         }));
 
         const lastMessage = messages[messages.length - 1];
-        const chat = model.startChat({ history });
+        const chat = ai.chats.create({
+          model: "gemini-2.5-flash",
+          history,
+          config: {
+            systemInstruction: SYSTEM_PROMPT,
+            tools: [{ functionDeclarations: TOOL_DECLARATIONS }],
+            thinkingConfig: { thinkingBudget: 0 }, // disable thinking for fast tool-use responses
+          },
+        });
 
         // Agentic loop — Gemini may request multiple tool calls (max 5 turns)
-        let currentMessage = lastMessage.content;
+        let currentMessage: string | Part[] = lastMessage.content;
         sendStatus("Thinking…");
         let totalTurns = 0;
         let responseGenerated = false;
@@ -425,21 +422,20 @@ export async function POST(req: Request) {
           totalTurns = turn + 1;
           console.log("[chat] gemini turn=%d ip=%s", turn + 1, ip);
           const turnStart = Date.now();
-          const result = await withRetry(
-            () => chat.sendMessage(currentMessage),
+          const response = await withRetry(
+            () => chat.sendMessage({ message: currentMessage }),
             `turn-${turn + 1}`
           );
-          const response = result.response;
           console.log("[chat] gemini turn=%d elapsed=%dms ip=%s", turn + 1, Date.now() - turnStart, ip);
 
-          const functionCalls = response.functionCalls();
+          const functionCalls = response.functionCalls;
           if (functionCalls && functionCalls.length > 0) {
             const toolNames = functionCalls.map((fc) => fc.name).join(", ");
             console.log("[chat] tool_calls turn=%d tools=[%s] ip=%s", turn + 1, toolNames, ip);
 
             // Emit a status label for each tool call
             const label = functionCalls.length === 1
-              ? toolStatusLabel(functionCalls[0].name)
+              ? toolStatusLabel(functionCalls[0].name ?? "")
               : "Fetching data…";
             sendStatus(label);
 
@@ -449,7 +445,7 @@ export async function POST(req: Request) {
                 const toolStart = Date.now();
                 let output: unknown;
                 try {
-                  output = await executeTool(fc.name, fc.args as Record<string, unknown>);
+                  output = await executeTool(fc.name ?? "", fc.args as Record<string, unknown> ?? {});
                   const resultSize = JSON.stringify(output).length;
                   if (resultSize > 80_000) {
                     console.warn("[chat] tool_large_result tool=%s resultSize=%d — may exceed token limit ip=%s", fc.name, resultSize, ip);
@@ -468,21 +464,21 @@ export async function POST(req: Request) {
                 }
                 return {
                   functionResponse: {
-                    name: fc.name,
+                    name: fc.name ?? "",
                     response: { result: JSON.stringify(output) },
                   },
-                };
+                } satisfies Part;
               })
             );
 
             sendStatus("Processing results…");
-            // Feed tool results back as a new turn
-            currentMessage = toolResults as unknown as string;
+            // Feed tool results back as function response parts
+            currentMessage = toolResults;
             continue;
           }
 
           // Stream the final text response word by word
-          const text = response.text();
+          const text = response.text;
           if (text) {
             console.log(
               "[chat] response_ok turns=%d totalElapsed=%dms responseLen=%d ip=%s",

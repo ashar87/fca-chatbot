@@ -11,7 +11,7 @@ A visual clone of [data.fca.org.uk](https://data.fca.org.uk) with an embedded AI
 | Framework | Next.js 14 (App Router) |
 | Language | TypeScript |
 | Styling | Tailwind CSS |
-| AI Model | Gemini 3.1 Flash-Lite (`gemini-3.1-flash-lite`) via `@google/generative-ai` v0.24.1 |
+| AI Model | Gemini 2.5 Flash (`gemini-2.5-flash`, thinking disabled) via `@google/genai` v2.7.0 |
 | PDF extraction | `pdf-parse` |
 | Markdown rendering | `react-markdown` |
 | Deployment target | Vercel |
