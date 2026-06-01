@@ -398,7 +398,7 @@ export async function POST(req: Request) {
 
       try {
         const model = genai.getGenerativeModel({
-          model: "gemini-2.0-flash",
+          model: "gemini-3.1-flash-lite",
           systemInstruction: SYSTEM_PROMPT,
           tools: [{ functionDeclarations: TOOL_DECLARATIONS }],
         });
