@@ -240,7 +240,30 @@ Origin: https://data.fca.org.uk
 
 **Important:** The API rejects ISO timestamps that contain milliseconds (`.000Z`). Always strip milliseconds before sending dates.
 
-**Known issue:** The NSM endpoint is protected by Cloudflare Bot Management which checks TLS/JA3 fingerprints. Node.js fetch may be blocked depending on the deployment environment. The `fcaPost` helper uses native `fetch` with appropriate headers; if blocked, curl-based fallback may be needed.
+### Cloudflare Blocking — Known Issue
+
+The NSM search endpoint is protected by Cloudflare Bot Management. When Vercel's serverless function IPs are rate-throttled, the API returns a legitimate-looking 200 response with `took: 2ms` and `value: 0` — a soft-block rather than an HTTP error.
+
+**Observed behaviour:**
+- `took < 10ms` + `value: 0` → Cloudflare soft-block (real Elasticsearch searches always take >10ms)
+- `took > 10ms` + results → genuine response
+- Blocking is rate-based and intermittent — later turns in the same request often get through after a few seconds have passed
+
+**Mitigation in place:**
+- `nsmCache` (in `fca-tools.ts`) caches successful search results for 2 hours. Once a query gets through Cloudflare, all subsequent identical queries are served from cache with no FCA API call.
+
+**Approaches tried and their outcomes:**
+
+| Approach | Result |
+|---|---|
+| `curl` subprocess (different TLS fingerprint) | Still blocked — Cloudflare is filtering on IP, not TLS fingerprint |
+| Retry with 1s/2s backoff inside `fcaPost` | Blocked the same; added 6.5s overhead per call — reverted |
+| `company_lei` → `document_content` fallback on 0 results | Doubled blocked calls per turn — reverted |
+| Edge-runtime proxy at `/api/fca-proxy` | 401 from Vercel Deployment Protection on self-calls — reverted |
+
+**Options not yet tried:**
+- Vercel Protection Bypass Secret (`VERCEL_AUTOMATION_BYPASS_SECRET` env var + `x-vercel-protection-bypass` header) to make the edge proxy self-call work
+- Commercial rotating residential proxy service (Bright Data, Oxylabs etc.)
 
 ### Key NSM Response Fields
 
