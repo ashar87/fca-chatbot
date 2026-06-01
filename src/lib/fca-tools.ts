@@ -34,58 +34,42 @@ function nsmCacheSet(key: string, data: { total: number; filings: NSMFiling[] })
 }
 
 /**
- * POST to the FCA NSM search API via our Edge-runtime proxy.
- *
- * The NSM endpoint is protected by Cloudflare Bot Management which blocks
- * Vercel's serverless function egress IPs. By routing through /api/fca-proxy
- * (Edge runtime), the outbound request comes from Vercel's CDN edge nodes
- * which have a different, less-blocked IP pool.
- *
- * Falls back to calling the FCA API directly if no VERCEL_URL is available
- * (e.g. local development where edge proxy isn't needed).
+ * POST to the FCA NSM search API.
+ * The endpoint is protected by Cloudflare Bot Management — when blocked it
+ * returns a 200 with took<10ms and 0 results. Results are cached in nsmCache
+ * to avoid repeated calls for the same query.
  */
 async function fcaPost(url: string, body: unknown): Promise<unknown> {
   const start = Date.now();
-
-  // Build the proxy URL: extract the ?index= param from the FCA URL and
-  // pass the POST body through our own edge proxy route.
-  const fcaUrl = new URL(url);
-  const index = fcaUrl.searchParams.get("index") ?? "fca-nsm-searchdata";
-
-  const vercelUrl = process.env.VERCEL_URL;
-  const proxyBase = vercelUrl
-    ? `https://${vercelUrl}/api/fca-proxy`
-    : "http://localhost:3000/api/fca-proxy";
-  const proxyUrl = `${proxyBase}?index=${encodeURIComponent(index)}`;
-
-  console.log("[fca-tools] fcaPost via=%s", vercelUrl ? "edge-proxy" : "localhost");
-
   let res: Response;
   try {
-    res = await fetch(proxyUrl, {
+    res = await fetch(url, {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
+      headers: {
+        "Content-Type": "application/json",
+        Accept: "application/json, text/plain, */*",
+        Origin: "https://data.fca.org.uk",
+        Referer: "https://data.fca.org.uk/",
+        "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
+      },
       body: JSON.stringify(body),
     });
   } catch (err) {
-    console.error("[fca-tools] fcaPost fetch_error url=%s error=%s", proxyUrl, (err as Error).message);
+    console.error("[fca-tools] fcaPost fetch_error url=%s error=%s", url, (err as Error).message);
     return null;
   }
-
   if (!res.ok) {
-    console.error("[fca-tools] fcaPost http_error url=%s status=%d elapsed=%dms", proxyUrl, res.status, Date.now() - start);
+    console.error("[fca-tools] fcaPost http_error url=%s status=%d elapsed=%dms", url, res.status, Date.now() - start);
     return null;
   }
-
   const text = await res.text();
   let parsed: unknown;
   try {
     parsed = JSON.parse(text);
   } catch {
-    console.error("[fca-tools] fcaPost json_parse_error body=%s", text.slice(0, 200));
+    console.error("[fca-tools] fcaPost json_parse_error url=%s body=%s", url, text.slice(0, 200));
     return null;
   }
-
   const p = parsed as Record<string, unknown>;
   const took = p?.took as number | undefined;
   console.log("[fca-tools] fcaPost ok elapsed=%dms took=%dms bodyPreview=%s",
