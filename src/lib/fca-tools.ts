@@ -12,6 +12,32 @@ const execFileAsync = promisify(execFile);
 const FCA_BASE = "https://data.fca.org.uk";
 const FCA_API_BASE = "https://api.data.fca.org.uk";
 
+// ─── NSM search cache ────────────────────────────────────────────────────────
+// Caches successful NSM search results to avoid hitting Cloudflare rate limits
+// on repeated queries. Keyed by a hash of the search parameters.
+// Only caches results with total > 0 (blocked responses are never cached).
+const NSM_CACHE_TTL = 2 * 60 * 60 * 1000; // 2 hours
+interface NsmCacheEntry { data: { total: number; filings: NSMFiling[] }; ts: number }
+const nsmCache = new Map<string, NsmCacheEntry>();
+
+function nsmCacheKey(prefix: string, params: Record<string, unknown>): string {
+  return `${prefix}:${JSON.stringify(params)}`;
+}
+
+function nsmCacheGet(key: string): { total: number; filings: NSMFiling[] } | null {
+  const entry = nsmCache.get(key);
+  if (!entry) return null;
+  if (Date.now() - entry.ts > NSM_CACHE_TTL) { nsmCache.delete(key); return null; }
+  console.log("[fca-tools] nsm_cache_hit key=%s total=%d", key.slice(0, 60), entry.data.total);
+  return entry.data;
+}
+
+function nsmCacheSet(key: string, data: { total: number; filings: NSMFiling[] }) {
+  if (data.total === 0) return; // never cache blocked/empty results
+  nsmCache.set(key, { data, ts: Date.now() });
+  console.log("[fca-tools] nsm_cache_set key=%s total=%d", key.slice(0, 60), data.total);
+}
+
 /**
  * The NSM search endpoint (fca-nsm-searchdata) is protected by Cloudflare Bot Management
  * which checks the TLS/JA3 fingerprint. Node.js has a distinct fingerprint that gets blocked,
@@ -167,6 +193,10 @@ export async function searchNSMByCompany(params: {
   date_to?: string;
   page?: number;
 }): Promise<{ total: number; filings: NSMFiling[] }> {
+  const cacheKey = nsmCacheKey("company", params);
+  const cached = nsmCacheGet(cacheKey);
+  if (cached) return cached;
+
   const from = (params.page ?? 0) * 50;
 
   const criteria: unknown[] = [
@@ -211,7 +241,9 @@ export async function searchNSMByCompany(params: {
   }
 
   console.log("[fca-tools] searchNSMByCompany ok company=%s total=%d returned=%d", params.company, total, hits.length);
-  return { total, filings: mapHitsToFilings(hits) };
+  const result = { total, filings: mapHitsToFilings(hits) };
+  nsmCacheSet(cacheKey, result);
+  return result;
 }
 
 /**
@@ -226,6 +258,10 @@ export async function searchNSMByLEI(params: {
   date_to?: string;
   page?: number;
 }): Promise<{ total: number; filings: NSMFiling[] }> {
+  const cacheKey = nsmCacheKey("lei", params);
+  const cached = nsmCacheGet(cacheKey);
+  if (cached) return cached;
+
   const from = (params.page ?? 0) * 50;
 
   const criteria: unknown[] = [
@@ -270,7 +306,9 @@ export async function searchNSMByLEI(params: {
   }
 
   console.log("[fca-tools] searchNSMByLEI ok lei=%s total=%d returned=%d", params.lei, total, hits.length);
-  return { total, filings: mapHitsToFilings(hits) };
+  const result = { total, filings: mapHitsToFilings(hits) };
+  nsmCacheSet(cacheKey, result);
+  return result;
 }
 
 /**
@@ -286,6 +324,10 @@ export async function searchNSMByContent(params: {
   date_to?: string;
   page?: number;
 }): Promise<{ total: number; filings: NSMFiling[] }> {
+  const cacheKey = nsmCacheKey("content", params);
+  const cached = nsmCacheGet(cacheKey);
+  if (cached) return cached;
+
   const from = (params.page ?? 0) * 50;
 
   const criteria: unknown[] = [
@@ -317,7 +359,9 @@ export async function searchNSMByContent(params: {
   const hits: unknown[] = hitsObj?.hits as unknown[] ?? [];
   if (total === 0) console.warn("[fca-tools] searchNSMByContent zero_results keywords=%s", params.keywords);
   else console.log("[fca-tools] searchNSMByContent ok keywords=%s total=%d returned=%d", params.keywords, total, hits.length);
-  return { total, filings: mapHitsToFilings(hits) };
+  const result = { total, filings: mapHitsToFilings(hits) };
+  nsmCacheSet(cacheKey, result);
+  return result;
 }
 
 // Keep a backward-compat export used by the /api/nsm route
