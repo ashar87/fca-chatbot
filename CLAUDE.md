@@ -138,11 +138,35 @@ The chat route runs an **agentic loop** (max 5 turns): Gemini can call multiple 
 
 ### Streaming
 
-`/api/chat` returns a `text/event-stream` response. Each SSE frame is:
+`/api/chat` returns a `text/event-stream` response. Two SSE frame types:
+
 ```
-data: {"text": "word "}
+data: {"type": "status", "text": "Thinking…"}   ← progress indicator
+data: {"text": "word "}                          ← response text (no type = text)
 ```
-Terminated by `data: [DONE]`. The client appends each chunk to the assistant message in real time.
+
+Terminated by `data: [DONE]`.
+
+**Status events** are emitted at four moments in the agentic loop:
+1. Before the first Gemini call → `"Thinking…"`
+2. When a tool call is detected → tool-specific label (see table below)
+3. After tools complete, before the next Gemini turn → `"Processing results…"`
+4. Text chunks have no `type` field — absence means text
+
+| Tool | Status label |
+|---|---|
+| `search_nsm_by_company` | `Searching NSM filings…` |
+| `search_nsm_by_lei` | `Searching NSM by LEI…` |
+| `search_nsm_by_content` | `Searching NSM content…` |
+| `fetch_pdf_summary` | `Reading document…` |
+| `search_firds` | `Looking up FIRDS instrument…` |
+| `search_fitrs` | `Looking up FITRS data…` |
+| `get_short_positions` | `Fetching short positions…` |
+
+**ChatWidget rendering:**
+- `{"type":"status"}` → updates `statusText` state, shown as an animated clock-icon pill inside the assistant bubble while content is empty
+- `{"text":...}` → clears `statusText`, appends to accumulated content with a `▌` cursor
+- On completion → disclaimer appears below the message
 
 ---
 
