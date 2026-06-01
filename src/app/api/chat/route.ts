@@ -269,6 +269,38 @@ function guardInput(message: string): string | null {
   return null;
 }
 
+// ─── Gemini retry wrapper ────────────────────────────────────────────────────
+
+async function withRetry<T>(
+  fn: () => Promise<T>,
+  label: string,
+  maxAttempts = 3
+): Promise<T> {
+  for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+    try {
+      return await fn();
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      const isRetryable =
+        msg.includes("503") ||
+        msg.includes("429") ||
+        msg.includes("Service Unavailable") ||
+        msg.includes("Too Many Requests");
+      if (isRetryable && attempt < maxAttempts) {
+        const delay = Math.pow(2, attempt - 1) * 1000; // 1s, 2s
+        console.warn(
+          "[chat] gemini_retry label=%s attempt=%d/%d delay=%dms error=%s",
+          label, attempt, maxAttempts, delay, msg.slice(0, 120)
+        );
+        await new Promise((r) => setTimeout(r, delay));
+        continue;
+      }
+      throw err;
+    }
+  }
+  throw new Error("Max retry attempts reached");
+}
+
 // ─── Rate limiting ────────────────────────────────────────────────────────────
 const requestCounts = new Map<string, { count: number; reset: number }>();
 
@@ -366,7 +398,7 @@ export async function POST(req: Request) {
 
       try {
         const model = genai.getGenerativeModel({
-          model: "gemini-3.5-flash",
+          model: "gemini-2.5-flash",
           systemInstruction: SYSTEM_PROMPT,
           tools: [{ functionDeclarations: TOOL_DECLARATIONS }],
         });
@@ -389,7 +421,10 @@ export async function POST(req: Request) {
           totalTurns = turn + 1;
           console.log("[chat] gemini turn=%d ip=%s", turn + 1, ip);
           const turnStart = Date.now();
-          const result = await chat.sendMessage(currentMessage);
+          const result = await withRetry(
+            () => chat.sendMessage(currentMessage),
+            `turn-${turn + 1}`
+          );
           const response = result.response;
           console.log("[chat] gemini turn=%d elapsed=%dms ip=%s", turn + 1, Date.now() - turnStart, ip);
 
