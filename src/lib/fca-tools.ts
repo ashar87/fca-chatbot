@@ -4,6 +4,11 @@
  * robots.txt is respected — these are the same calls a browser makes when using the portal.
  */
 
+import { execFile } from "child_process";
+import { promisify } from "util";
+
+const execFileAsync = promisify(execFile);
+
 const FCA_BASE = "https://data.fca.org.uk";
 const FCA_API_BASE = "https://api.data.fca.org.uk";
 
@@ -12,53 +17,59 @@ const FCA_API_BASE = "https://api.data.fca.org.uk";
  * which checks the TLS/JA3 fingerprint. Node.js has a distinct fingerprint that gets blocked,
  * but curl passes. This helper spawns curl for POST requests to the FCA API.
  */
+/**
+ * POST to the FCA API using curl instead of Node.js fetch.
+ * curl has a browser-like TLS fingerprint that passes Cloudflare Bot Management;
+ * Node.js fetch has a distinct fingerprint that gets soft-blocked (200 with 0 results).
+ */
 async function fcaPost(url: string, body: unknown, attempt = 1): Promise<unknown> {
   const start = Date.now();
-  let res: Response;
+  const bodyStr = JSON.stringify(body);
+
+  let stdout: string;
   try {
-    res = await fetch(url, {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        Accept: "application/json, text/plain, */*",
-        Origin: "https://data.fca.org.uk",
-        Referer: "https://data.fca.org.uk/",
-      },
-      body: JSON.stringify(body),
-    });
+    const result = await execFileAsync("curl", [
+      "--silent",
+      "--request", "POST",
+      "--url", url,
+      "--header", "Content-Type: application/json",
+      "--header", "Accept: application/json, text/plain, */*",
+      "--header", "Origin: https://data.fca.org.uk",
+      "--header", "Referer: https://data.fca.org.uk/",
+      "--header", "User-Agent: Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
+      "--data-raw", bodyStr,
+      "--compressed",
+      "--max-time", "15",
+    ]);
+    stdout = result.stdout;
   } catch (err) {
-    console.error("[fca-tools] fcaPost fetch_error url=%s error=%s", url, (err as Error).message);
-    return null;
-  }
-  if (!res.ok) {
-    console.error("[fca-tools] fcaPost http_error url=%s status=%d elapsed=%dms", url, res.status, Date.now() - start);
-    return null;
-  }
-  const text = await res.text();
-  let parsed: unknown;
-  try {
-    parsed = JSON.parse(text);
-  } catch {
-    console.error("[fca-tools] fcaPost json_parse_error url=%s body=%s", url, text.slice(0, 300));
+    console.error("[fca-tools] fcaPost curl_error url=%s error=%s elapsed=%dms", url, (err as Error).message, Date.now() - start);
     return null;
   }
 
-  // Detect Cloudflare soft-block: response completes in <10ms with 0 results.
-  // Real Elasticsearch searches always take >10ms. Retry with backoff (max 3 attempts).
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(stdout);
+  } catch {
+    console.error("[fca-tools] fcaPost json_parse_error url=%s body=%s", url, stdout.slice(0, 200));
+    return null;
+  }
+
   const p = parsed as Record<string, unknown>;
   const took = p?.took as number | undefined;
   const totalValue = ((p?.hits as Record<string, unknown>)?.total as Record<string, unknown>)?.value;
-  const isSoftBlock = typeof took === "number" && took < 10 && totalValue === 0;
 
+  // Still detect soft-block in case curl also gets throttled — retry once with a short delay
+  const isSoftBlock = typeof took === "number" && took < 10 && totalValue === 0;
   if (isSoftBlock && attempt < 3) {
-    const delay = attempt * 1000; // 1s, then 2s
-    console.warn("[fca-tools] fcaPost cloudflare_soft_block took=%dms attempt=%d delay=%dms url=%s", took, attempt, delay, url);
+    const delay = attempt * 1000;
+    console.warn("[fca-tools] fcaPost soft_block took=%dms attempt=%d delay=%dms url=%s", took, attempt, delay, url);
     await new Promise((r) => setTimeout(r, delay));
     return fcaPost(url, body, attempt + 1);
   }
 
-  console.log("[fca-tools] fcaPost ok url=%s status=%d elapsed=%dms took=%dms attempt=%d bodyPreview=%s",
-    url, res.status, Date.now() - start, took ?? -1, attempt, text.slice(0, 200).replace(/\n/g, " "));
+  console.log("[fca-tools] fcaPost ok elapsed=%dms took=%dms attempt=%d bodyPreview=%s",
+    Date.now() - start, took ?? -1, attempt, stdout.slice(0, 200).replace(/\n/g, " "));
   return parsed;
 }
 
