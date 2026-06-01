@@ -12,7 +12,7 @@ const FCA_API_BASE = "https://api.data.fca.org.uk";
  * which checks the TLS/JA3 fingerprint. Node.js has a distinct fingerprint that gets blocked,
  * but curl passes. This helper spawns curl for POST requests to the FCA API.
  */
-async function fcaPost(url: string, body: unknown): Promise<unknown> {
+async function fcaPost(url: string, body: unknown, attempt = 1): Promise<unknown> {
   const start = Date.now();
   let res: Response;
   try {
@@ -35,13 +35,31 @@ async function fcaPost(url: string, body: unknown): Promise<unknown> {
     return null;
   }
   const text = await res.text();
-  console.log("[fca-tools] fcaPost ok url=%s status=%d elapsed=%dms bodyPreview=%s", url, res.status, Date.now() - start, text.slice(0, 300).replace(/\n/g, " "));
+  let parsed: unknown;
   try {
-    return JSON.parse(text);
+    parsed = JSON.parse(text);
   } catch {
     console.error("[fca-tools] fcaPost json_parse_error url=%s body=%s", url, text.slice(0, 300));
     return null;
   }
+
+  // Detect Cloudflare soft-block: response completes in <10ms with 0 results.
+  // Real Elasticsearch searches always take >10ms. Retry with backoff (max 3 attempts).
+  const p = parsed as Record<string, unknown>;
+  const took = p?.took as number | undefined;
+  const totalValue = ((p?.hits as Record<string, unknown>)?.total as Record<string, unknown>)?.value;
+  const isSoftBlock = typeof took === "number" && took < 10 && totalValue === 0;
+
+  if (isSoftBlock && attempt < 3) {
+    const delay = attempt * 1000; // 1s, then 2s
+    console.warn("[fca-tools] fcaPost cloudflare_soft_block took=%dms attempt=%d delay=%dms url=%s", took, attempt, delay, url);
+    await new Promise((r) => setTimeout(r, delay));
+    return fcaPost(url, body, attempt + 1);
+  }
+
+  console.log("[fca-tools] fcaPost ok url=%s status=%d elapsed=%dms took=%dms attempt=%d bodyPreview=%s",
+    url, res.status, Date.now() - start, took ?? -1, attempt, text.slice(0, 200).replace(/\n/g, " "));
+  return parsed;
 }
 
 // ─── NSM ──────────────────────────────────────────────────────────────────────
