@@ -39,7 +39,7 @@ function nsmCacheSet(key: string, data: { total: number; filings: NSMFiling[] })
  * returns a 200 with took<10ms and 0 results. Results are cached in nsmCache
  * to avoid repeated calls for the same query.
  */
-async function fcaPost(url: string, body: unknown): Promise<unknown> {
+async function fcaPost(url: string, body: unknown, attempt = 1): Promise<unknown> {
   const start = Date.now();
   let res: Response;
   try {
@@ -72,8 +72,15 @@ async function fcaPost(url: string, body: unknown): Promise<unknown> {
   }
   const p = parsed as Record<string, unknown>;
   const took = p?.took as number | undefined;
-  console.log("[fca-tools] fcaPost ok elapsed=%dms took=%dms bodyPreview=%s",
-    Date.now() - start, took ?? -1, text.slice(0, 200).replace(/\n/g, " "));
+  const totalValue = ((p?.hits as Record<string, unknown>)?.total as Record<string, unknown>)?.value;
+  // took<10ms + value=0 is Cloudflare's soft-block fingerprint — real Elasticsearch always takes >10ms
+  if (typeof took === "number" && took < 10 && totalValue === 0 && attempt < 3) {
+    console.warn("[fca-tools] fcaPost soft_block took=%dms attempt=%d url=%s", took, attempt, url);
+    await new Promise(r => setTimeout(r, 800));
+    return fcaPost(url, body, attempt + 1);
+  }
+  console.log("[fca-tools] fcaPost ok elapsed=%dms took=%dms attempt=%d bodyPreview=%s",
+    Date.now() - start, took ?? -1, attempt, text.slice(0, 200).replace(/\n/g, " "));
   return parsed;
 }
 
