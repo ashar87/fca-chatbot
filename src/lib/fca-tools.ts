@@ -41,25 +41,43 @@ function nsmCacheSet(key: string, data: { total: number; filings: NSMFiling[] })
  */
 async function fcaPost(url: string, body: unknown, attempt = 1): Promise<unknown> {
   const start = Date.now();
+
+  // On Vercel: route through the edge proxy so outbound FCA requests come from
+  // CDN edge node IPs (different pool from serverless IPs, not Cloudflare-blocked).
+  // Locally: call the FCA API directly — no Deployment Protection to bypass.
+  const vercelUrl = process.env.VERCEL_URL;
+  const bypassSecret = process.env.VERCEL_AUTOMATION_BYPASS_SECRET;
+  let fetchUrl: string;
+  let headers: Record<string, string>;
+
+  if (vercelUrl) {
+    const index = new URL(url).searchParams.get("index") ?? "fca-nsm-searchdata";
+    fetchUrl = `https://${vercelUrl}/api/fca-proxy?index=${encodeURIComponent(index)}`;
+    headers = {
+      "Content-Type": "application/json",
+      ...(bypassSecret ? { "x-vercel-protection-bypass": bypassSecret } : {}),
+    };
+    console.log("[fca-tools] fcaPost via=edge-proxy attempt=%d bypass=%s", attempt, bypassSecret ? "yes" : "no");
+  } else {
+    fetchUrl = url;
+    headers = {
+      "Content-Type": "application/json",
+      Accept: "application/json, text/plain, */*",
+      Origin: "https://data.fca.org.uk",
+      Referer: "https://data.fca.org.uk/",
+      "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
+    };
+  }
+
   let res: Response;
   try {
-    res = await fetch(url, {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        Accept: "application/json, text/plain, */*",
-        Origin: "https://data.fca.org.uk",
-        Referer: "https://data.fca.org.uk/",
-        "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
-      },
-      body: JSON.stringify(body),
-    });
+    res = await fetch(fetchUrl, { method: "POST", headers, body: JSON.stringify(body) });
   } catch (err) {
-    console.error("[fca-tools] fcaPost fetch_error url=%s error=%s", url, (err as Error).message);
+    console.error("[fca-tools] fcaPost fetch_error url=%s error=%s", fetchUrl, (err as Error).message);
     return null;
   }
   if (!res.ok) {
-    console.error("[fca-tools] fcaPost http_error url=%s status=%d elapsed=%dms", url, res.status, Date.now() - start);
+    console.error("[fca-tools] fcaPost http_error url=%s status=%d elapsed=%dms", fetchUrl, res.status, Date.now() - start);
     return null;
   }
   const text = await res.text();
@@ -67,7 +85,7 @@ async function fcaPost(url: string, body: unknown, attempt = 1): Promise<unknown
   try {
     parsed = JSON.parse(text);
   } catch {
-    console.error("[fca-tools] fcaPost json_parse_error url=%s body=%s", url, text.slice(0, 200));
+    console.error("[fca-tools] fcaPost json_parse_error url=%s body=%s", fetchUrl, text.slice(0, 200));
     return null;
   }
   const p = parsed as Record<string, unknown>;
@@ -75,7 +93,7 @@ async function fcaPost(url: string, body: unknown, attempt = 1): Promise<unknown
   const totalValue = ((p?.hits as Record<string, unknown>)?.total as Record<string, unknown>)?.value;
   // took<10ms + value=0 is Cloudflare's soft-block fingerprint — real Elasticsearch always takes >10ms
   if (typeof took === "number" && took < 10 && totalValue === 0 && attempt < 3) {
-    console.warn("[fca-tools] fcaPost soft_block took=%dms attempt=%d url=%s", took, attempt, url);
+    console.warn("[fca-tools] fcaPost soft_block took=%dms attempt=%d", took, attempt);
     await new Promise(r => setTimeout(r, 800));
     return fcaPost(url, body, attempt + 1);
   }
