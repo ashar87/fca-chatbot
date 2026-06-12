@@ -415,152 +415,247 @@ export async function fetchPDFSummary(pdfUrl: string, extractionPrompt?: string)
 
 export interface FIRDSInstrument {
   isin: string;
+  instrumentId: string;
   instrumentName: string;
+  shortName: string;
   cfiCode: string;
   mic: string;
-  tradingVenue: string;
+  issuerLei: string;
+  currency: string;
+  firstTradeDate: string;
   reportable: boolean;
+  detailUrl: string;
 }
+
+/**
+ * Search FIRDS using the same POST search API as NSM.
+ * The `keyword` field performs a full-text search across instrument names.
+ * For an exact ISIN, pass it as `keyword` — the API will match on isin_sngl_noindx / isin_sngl_indx fields.
+ */
+// Standard filters always included in criteria-based FIRDS searches
+const FIRDS_BASE_CRITERIA = [
+  { name: "techattrbts_nvrpblshd", value: "false" },
+  { name: "active_flag", value: "Y" },
+];
 
 export async function searchFIRDS(params: {
   isin?: string;
+  instrument_id?: string;
   instrument_name?: string;
-  mic?: string;
+  issuer_lei?: string;
+  classification?: string;
 }): Promise<FIRDSInstrument[]> {
-  const url = new URL(`${FCA_BASE}/api/proxy/firds/instruments`);
-  if (params.isin) url.searchParams.set("isin", params.isin);
-  if (params.instrument_name) url.searchParams.set("instrumentName", params.instrument_name);
-  if (params.mic) url.searchParams.set("mic", params.mic);
-  url.searchParams.set("pageSize", "20");
+  const hasCriteria = !!(params.instrument_id || params.isin || params.issuer_lei || params.classification);
+  const keyword = hasCriteria ? "" : (params.instrument_name ?? "");
+  if (!keyword && !hasCriteria) return [];
 
-  const firdsStart = Date.now();
-  const res = await fetch(url.toString(), {
-    headers: { Accept: "application/json", "User-Agent": "FCA-Demo-Bot/1.0" },
-    next: { revalidate: 3600 * 24 },
-  });
-
-  if (!res.ok) {
-    console.warn("[fca-tools] searchFIRDS http_error status=%d isin=%s elapsed=%dms — trying fallback", res.status, params.isin, Date.now() - firdsStart);
-    return searchFIRDSFallback(params);
+  // Criteria-based search (instrument ID or ISIN) — uses criteriaObj, no keyword field
+  // Keyword search (company/instrument name) — uses keyword field, criteriaObj: null
+  let body: Record<string, unknown>;
+  if (params.instrument_id) {
+    body = {
+      from: 0,
+      size: 20,
+      sort: "fininstrmgnlattrbts_id",
+      sortorder: "asc",
+      criteriaObj: {
+        criteria: [
+          { name: "fininstrmgnlattrbts_id", value: params.instrument_id },
+          ...FIRDS_BASE_CRITERIA,
+        ],
+        dateCriteria: null,
+      },
+    };
+  } else if (params.isin) {
+    body = {
+      from: 0,
+      size: 20,
+      sort: "fininstrmgnlattrbts_id",
+      sortorder: "asc",
+      keyword: null,
+      criteriaObj: {
+        criteria: [
+          { name: "isin_bskt", value: params.isin },
+          ...FIRDS_BASE_CRITERIA,
+        ],
+        dateCriteria: null,
+      },
+    };
+  } else if (params.issuer_lei) {
+    body = {
+      from: 0,
+      size: 20,
+      sort: "fininstrmgnlattrbts_id",
+      sortorder: "asc",
+      keyword: null,
+      criteriaObj: {
+        criteria: [
+          { name: "issr", value: params.issuer_lei },
+          ...FIRDS_BASE_CRITERIA,
+        ],
+        dateCriteria: null,
+      },
+    };
+  } else if (params.classification) {
+    body = {
+      from: 0,
+      size: 20,
+      sort: "fininstrmgnlattrbts_id",
+      sortorder: "asc",
+      keyword: null,
+      criteriaObj: {
+        criteria: [
+          { name: "fininstrmgnlattrbts_clssfctntp", value: params.classification },
+          ...FIRDS_BASE_CRITERIA,
+        ],
+        dateCriteria: null,
+      },
+    };
+  } else {
+    body = {
+      from: 0,
+      size: 20,
+      sort: "fininstrmgnlattrbts_id",
+      sortorder: "asc",
+      keyword,
+      criteriaObj: null,
+    };
   }
 
-  const data = await res.json();
-  const items: unknown[] = data?.content ?? data?.items ?? (Array.isArray(data) ? data : []);
-  if (items.length === 0) console.warn("[fca-tools] searchFIRDS zero_results isin=%s name=%s elapsed=%dms", params.isin, params.instrument_name, Date.now() - firdsStart);
-  else console.log("[fca-tools] searchFIRDS ok isin=%s results=%d elapsed=%dms", params.isin, items.length, Date.now() - firdsStart);
-  return items.slice(0, 20).map((item: unknown) => {
-    const r = item as Record<string, unknown>;
-    const cfi = String(r.cfiCode ?? r.cfi ?? "");
+  const firdsStart = Date.now();
+  const data = await fcaPost(`${FCA_API_BASE}/search?index=fca-firds-viewdata`, body) as Record<string, unknown> | null;
+
+  if (!data) {
+    console.warn("[fca-tools] searchFIRDS no_data keyword=%s elapsed=%dms", keyword, Date.now() - firdsStart);
+    return [];
+  }
+
+  const hitsObj = data.hits as Record<string, unknown>;
+  const total = (hitsObj?.total as Record<string, unknown>)?.value as number ?? 0;
+  const hits: unknown[] = hitsObj?.hits as unknown[] ?? [];
+
+  if (total === 0) console.warn("[fca-tools] searchFIRDS zero_results keyword=%s elapsed=%dms", keyword, Date.now() - firdsStart);
+  else console.log("[fca-tools] searchFIRDS ok keyword=%s total=%d returned=%d elapsed=%dms", keyword, total, hits.length, Date.now() - firdsStart);
+
+  return hits.map((item: unknown) => {
+    const h = item as Record<string, unknown>;
+    const src = (h._source ?? {}) as Record<string, unknown>;
+    const cfi = String(src.fininstrmgnlattrbts_clssfctntp ?? "");
+    const isin = String(src.isin_sngl_noindx ?? src.isin_sngl_indx ?? "");
+    const seqId = String(src.seq_id ?? "");
     return {
-      isin: String(r.isin ?? ""),
-      instrumentName: String(r.instrumentFullName ?? r.name ?? r.instrumentName ?? ""),
+      isin,
+      instrumentId: String(src.fininstrmgnlattrbts_id ?? ""),
+      instrumentName: String(src.fininstrmgnlattrbts_fullnm ?? ""),
+      shortName: String(src.fininstrmgnlattrbts_shrtnm ?? ""),
       cfiCode: cfi,
-      mic: String(r.tradingVenueMic ?? r.mic ?? ""),
-      tradingVenue: String(r.tradingVenueDescription ?? r.tradingVenue ?? r.mic ?? ""),
-      reportable: isReportable(cfi, String(r.instrumentType ?? "")),
+      mic: String(src.tradgvnrltdattrbts_id ?? ""),
+      issuerLei: String(src.issr ?? ""),
+      currency: String(src.fininstrmgnlattrbts_ntnlccy ?? ""),
+      firstTradeDate: formatDate(String(src.tradgvnrltdattrbts_frsttraddt ?? "")),
+      reportable: isReportable(cfi),
+      detailUrl: seqId ? `${FCA_BASE}/#/moreinfo/${seqId}` : "",
     };
   });
 }
 
-async function searchFIRDSFallback(params: {
-  isin?: string;
-  instrument_name?: string;
-}): Promise<FIRDSInstrument[]> {
-  if (!params.isin) return [];
-  // Try direct ISIN lookup
-  const url = `${FCA_BASE}/api/proxy/firds/instruments/${encodeURIComponent(params.isin)}`;
-  const res = await fetch(url, {
-    headers: { Accept: "application/json", "User-Agent": "FCA-Demo-Bot/1.0" },
-  });
-  if (!res.ok) return [];
-  const data = await res.json();
-  const items: unknown[] = Array.isArray(data) ? data : [data];
-  return items.map((item: unknown) => {
-    const r = item as Record<string, unknown>;
-    const cfi = String(r.cfiCode ?? r.cfi ?? "");
-    return {
-      isin: String(r.isin ?? params.isin ?? ""),
-      instrumentName: String(r.instrumentFullName ?? r.name ?? ""),
-      cfiCode: cfi,
-      mic: String(r.tradingVenueMic ?? r.mic ?? ""),
-      tradingVenue: String(r.tradingVenueDescription ?? r.tradingVenue ?? ""),
-      reportable: isReportable(cfi, String(r.instrumentType ?? "")),
-    };
-  });
-}
-
-function isReportable(cfiCode: string, instrumentType: string): boolean {
-  // Under UK MiFIR, instruments admitted to or traded on UK trading venues are reportable
-  // CFI codes starting with E (equity), D (debt), R (entitlements) are generally reportable
+function isReportable(cfiCode: string): boolean {
+  // Under UK MiFIR, instruments admitted to or traded on UK trading venues are reportable.
+  // CFI codes starting with E (equity), D (debt), R (entitlements) are generally reportable.
   const c = cfiCode.toUpperCase();
-  const t = instrumentType.toUpperCase();
-  if (c.startsWith("E") || c.startsWith("D") || c.startsWith("R")) return true;
-  if (t.includes("EQUITY") || t.includes("BOND") || t.includes("SHARE")) return true;
-  return false;
+  return c.startsWith("E") || c.startsWith("D") || c.startsWith("R");
 }
 
 // ─── FITRS ────────────────────────────────────────────────────────────────────
 
-export interface FITRSRecord {
-  isin: string;
-  instrumentName: string;
-  liquidityStatus: string;
-  adna: string;
-  lisThreshold: string;
-  sstiThreshold: string;
-  calculationPeriod: string;
+export interface FITRSFile {
+  fileName: string;
+  fileType: "Full" | "Delta" | string;
+  instrumentType: string;
+  publicationDate: string;
+  downloadLink: string;
+  lastRefreshed: string;
 }
 
-export async function searchFITRS(isin: string): Promise<FITRSRecord | null> {
+/**
+ * Search the FITRS file index.
+ * FITRS publishes transparency calculation results as downloadable ZIP files
+ * (Full files weekly, Delta files daily). This function queries the file index
+ * by date range and optional file type filter.
+ *
+ * Date format for the API: DD/MM/YYYY
+ */
+export async function searchFITRS(params: {
+  date_from?: string;  // YYYY-MM-DD (will be converted to DD/MM/YYYY for API)
+  date_to?: string;    // YYYY-MM-DD (will be converted to DD/MM/YYYY for API)
+  file_type?: "Full" | "Delta";
+  keyword?: string;
+}): Promise<{ total: number; files: FITRSFile[] }> {
   const fitrsStart = Date.now();
-  const url = `${FCA_BASE}/api/proxy/fitrs/bonds/${encodeURIComponent(isin)}`;
-  const res = await fetch(url, {
-    headers: { Accept: "application/json", "User-Agent": "FCA-Demo-Bot/1.0" },
-    next: { revalidate: 3600 * 24 * 7 },
-  });
 
-  if (!res.ok) {
-    console.warn("[fca-tools] searchFITRS http_error status=%d isin=%s elapsed=%dms — trying equities fallback", res.status, isin, Date.now() - fitrsStart);
-    return searchFITRSFallback(isin);
+  // API requires DD/MM/YYYY format for date criteria
+  function toApiDate(iso: string): string {
+    const d = new Date(iso);
+    if (isNaN(d.getTime())) return iso;
+    const dd = String(d.getDate()).padStart(2, "0");
+    const mm = String(d.getMonth() + 1).padStart(2, "0");
+    const yyyy = d.getFullYear();
+    return `${dd}/${mm}/${yyyy}`;
   }
 
-  const data = await res.json();
-  const r = (Array.isArray(data) ? data[0] : data) as Record<string, unknown> | undefined;
-  if (!r) {
-    console.warn("[fca-tools] searchFITRS no_record isin=%s elapsed=%dms", isin, Date.now() - fitrsStart);
-    return null;
-  }
-  console.log("[fca-tools] searchFITRS ok isin=%s elapsed=%dms", isin, Date.now() - fitrsStart);
-  return {
-    isin: String(r.isin ?? isin),
-    instrumentName: String(r.instrumentFullName ?? r.name ?? isin),
-    liquidityStatus: String(r.liquidityStatus ?? r.liquid ?? "Unknown"),
-    adna: formatAmount(String(r.adna ?? r.averageDailyNotionalAmount ?? "")),
-    lisThreshold: formatAmount(String(r.lisThreshold ?? r.lis ?? "")),
-    sstiThreshold: formatAmount(String(r.sstiThreshold ?? r.ssti ?? "")),
-    calculationPeriod: String(r.calculationPeriod ?? r.period ?? ""),
-  };
-}
+  const now = new Date();
+  const defaultFrom = new Date(now);
+  defaultFrom.setDate(now.getDate() - 30);
 
-async function searchFITRSFallback(isin: string): Promise<FITRSRecord | null> {
-  // Try equities endpoint
-  const url = `${FCA_BASE}/api/proxy/fitrs/equities/${encodeURIComponent(isin)}`;
-  const res = await fetch(url, {
-    headers: { Accept: "application/json", "User-Agent": "FCA-Demo-Bot/1.0" },
-  });
-  if (!res.ok) return null;
-  const data = await res.json();
-  const r = (Array.isArray(data) ? data[0] : data) as Record<string, unknown> | undefined;
-  if (!r) return null;
-  return {
-    isin: String(r.isin ?? isin),
-    instrumentName: String(r.instrumentFullName ?? r.name ?? isin),
-    liquidityStatus: String(r.liquidityStatus ?? "Unknown"),
-    adna: formatAmount(String(r.adna ?? "")),
-    lisThreshold: formatAmount(String(r.lisThreshold ?? r.lis ?? "")),
-    sstiThreshold: formatAmount(String(r.sstiThreshold ?? r.ssti ?? "")),
-    calculationPeriod: String(r.calculationPeriod ?? ""),
+  const dateFrom = toApiDate(params.date_from ?? defaultFrom.toISOString().slice(0, 10));
+  const dateTo = toApiDate(params.date_to ?? now.toISOString().slice(0, 10));
+
+  const criteria: unknown[] | null = params.file_type
+    ? [{ name: "file_type", value: params.file_type }]
+    : null;
+
+  const body: Record<string, unknown> = {
+    from: 0,
+    size: 20,
+    sort: "publication_date",
+    sortorder: "desc",
+    keyword: params.keyword ?? null,
+    criteriaObj: {
+      criteria,
+      dateCriteria: [
+        { name: "publication_date", value: { from: dateFrom, to: dateTo } },
+      ],
+    },
   };
+
+  const data = await fcaPost(`${FCA_API_BASE}/search?index=fca-fitrs-downloadfiles`, body) as Record<string, unknown> | null;
+
+  if (!data) {
+    console.warn("[fca-tools] searchFITRS no_data dateFrom=%s dateTo=%s elapsed=%dms", dateFrom, dateTo, Date.now() - fitrsStart);
+    return { total: 0, files: [] };
+  }
+
+  const hitsObj = data.hits as Record<string, unknown>;
+  const total = (hitsObj?.total as Record<string, unknown>)?.value as number ?? 0;
+  const hits: unknown[] = hitsObj?.hits as unknown[] ?? [];
+
+  if (total === 0) console.warn("[fca-tools] searchFITRS zero_results dateFrom=%s dateTo=%s elapsed=%dms", dateFrom, dateTo, Date.now() - fitrsStart);
+  else console.log("[fca-tools] searchFITRS ok total=%d returned=%d elapsed=%dms", total, hits.length, Date.now() - fitrsStart);
+
+  const files: FITRSFile[] = hits.map((item: unknown) => {
+    const h = item as Record<string, unknown>;
+    const src = (h._source ?? {}) as Record<string, unknown>;
+    return {
+      fileName: String(src.file_name ?? ""),
+      fileType: String(src.file_type ?? ""),
+      instrumentType: String(src.instrument_type ?? ""),
+      publicationDate: String(src.publication_date ?? ""),
+      downloadLink: String(src.download_link ?? ""),
+      lastRefreshed: String(src.last_refreshed ?? ""),
+    };
+  });
+
+  return { total, files };
 }
 
 // ─── Short Selling ────────────────────────────────────────────────────────────

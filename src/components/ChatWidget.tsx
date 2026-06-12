@@ -25,8 +25,9 @@ const STARTER_PROMPTS: Record<PortalSection, string[]> = {
     "Look up ISIN IE00B4L5Y983",
   ],
   fitrs: [
-    "What is the liquidity classification for ISIN XS1234567890?",
-    "What LIS threshold applies to ISIN XS9876543210?",
+    "What FITRS files were published this week?",
+    "Show me the latest full transparency files",
+    "List delta files published in the last 7 days",
   ],
   "short-selling": [
     "What are the current disclosed short positions in Rolls-Royce?",

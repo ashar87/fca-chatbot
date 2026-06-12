@@ -164,25 +164,36 @@ After receiving the extracted text, answer the user's question directly using th
   },
   {
     name: "search_firds",
-    description: "Search UK FIRDS for financial instrument reference data. Returns instrument details, CFI code, MIC, and MiFIR reportability.",
+    description: `Search UK FIRDS (Financial Instruments Reference Data System) for instrument data.
+Use an ISIN for a precise lookup. Use a company or instrument name for a keyword search — e.g. "Tesco", "Barclays", "Shell".
+Returns: instrument full name, short name, CFI code, MIC, issuer LEI, currency, first trade date, and MiFIR reportability.
+Note: keyword searches match on instrument names in the FIRDS database — a single company may have thousands of instruments (equities, derivatives, structured products).`,
     parameters: {
       type: Type.OBJECT,
       properties: {
-        isin: { type: Type.STRING, description: "ISIN code (e.g. GB0002875804)" },
-        instrument_name: { type: Type.STRING, description: "Optional: partial instrument or company name" },
-        mic: { type: Type.STRING, description: "Optional: market identifier code" },
+        instrument_id: { type: Type.STRING, description: "Instrument Identification Code (e.g. BRTCCOBDR002). Precise lookup — takes priority over all other params." },
+        isin: { type: Type.STRING, description: "ISIN code (e.g. GB0002875804)." },
+        issuer_lei: { type: Type.STRING, description: "LEI of the issuer or operator of the trading venue (20-char code, e.g. ML61HP3A4MKTTA1ZB671). Returns all instruments issued by that entity." },
+        classification: { type: Type.STRING, description: "CFI classification code (e.g. ESVTFR). Returns all instruments with that classification type." },
+        instrument_name: { type: Type.STRING, description: "Company or instrument name keyword (e.g. 'Tesco', 'Barclays'). Fallback when none of the above are provided." },
       },
     },
   },
   {
     name: "search_fitrs",
-    description: "Look up MiFID II transparency data from UK FITRS for an instrument — liquidity classification, LIS threshold, SSTI threshold.",
+    description: `Browse the FCA FITRS (Financial Instruments Transparency System) file index.
+FITRS publishes MiFID II transparency calculation results as downloadable ZIP files — not as per-instrument lookups.
+Use this to find available Full or Delta transparency files published within a date range.
+Returns: list of files with file name, type (Full/Delta), publication date, and download link.
+Full files are published weekly (every Saturday) and contain all equity instruments.
+Delta files are published daily and contain only changed records.`,
     parameters: {
       type: Type.OBJECT,
       properties: {
-        isin: { type: Type.STRING, description: "ISIN code to look up" },
+        date_from: { type: Type.STRING, description: `Start of publication date range in YYYY-MM-DD format. Defaults to 30 days ago. Today is ${todayStr()}.` },
+        date_to: { type: Type.STRING, description: `End of publication date range in YYYY-MM-DD format. Defaults to today (${todayStr()}).` },
+        file_type: { type: Type.STRING, description: "Optional filter: 'Full' for weekly full files, 'Delta' for daily delta files. Omit to return both." },
       },
-      required: ["isin"],
     },
   },
   {
@@ -389,7 +400,7 @@ export async function POST(req: Request) {
           case "search_nsm_by_content": return "Searching NSM content…";
           case "fetch_pdf_summary":     return "Reading document…";
           case "search_firds":          return "Looking up FIRDS instrument…";
-          case "search_fitrs":          return "Looking up FITRS data…";
+          case "search_fitrs":          return "Searching FITRS files…";
           case "get_short_positions":   return "Fetching short positions…";
           default:                      return "Fetching data…";
         }
@@ -579,12 +590,18 @@ async function executeTool(name: string, input: Record<string, unknown>): Promis
       );
     case "search_firds":
       return searchFIRDS({
+        instrument_id: input.instrument_id ? String(input.instrument_id) : undefined,
         isin: input.isin ? String(input.isin) : undefined,
+        issuer_lei: input.issuer_lei ? String(input.issuer_lei) : undefined,
+        classification: input.classification ? String(input.classification) : undefined,
         instrument_name: input.instrument_name ? String(input.instrument_name) : undefined,
-        mic: input.mic ? String(input.mic) : undefined,
       });
     case "search_fitrs":
-      return searchFITRS(String(input.isin ?? ""));
+      return searchFITRS({
+        date_from: input.date_from ? String(input.date_from) : undefined,
+        date_to: input.date_to ? String(input.date_to) : undefined,
+        file_type: input.file_type ? String(input.file_type) as "Full" | "Delta" : undefined,
+      });
     case "get_short_positions":
       return getShortPositions({
         issuer_name: input.issuer_name ? String(input.issuer_name) : undefined,

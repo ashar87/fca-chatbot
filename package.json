@@ -12,6 +12,7 @@
     "@google/genai": "^2.7.0",
     "@google/generative-ai": "^0.24.1",
     "ai": "^6.0.193",
+    "fflate": "^0.8.3",
     "next": "14.2.35",
     "pdf-parse": "^2.4.5",
     "react": "^18",
