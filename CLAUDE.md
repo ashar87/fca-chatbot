@@ -342,7 +342,8 @@ The NSM endpoint is protected by Cloudflare Bot Management. Vercel serverless IP
 
 | Variable | Required | Description |
 |---|---|---|
-| `GEMINI_API_KEY` | Yes | Google Gemini API key |
+| `GEMINI_API_KEY` | Yes | Primary Google Gemini API key |
+| `GEMINI_API_KEY_BACKUP` | No | Backup Gemini key — used automatically if primary hits quota (429/RESOURCE_EXHAUSTED) |
 | `VERCEL_URL` | Auto (Vercel) | Used by `fcaPost` to detect Vercel environment and route NSM via edge proxy |
 | `VERCEL_AUTOMATION_BYPASS_SECRET` | Vercel only | Adds `x-vercel-protection-bypass` header to edge proxy self-calls |
 
@@ -418,3 +419,4 @@ Two-layer defence in `chat/route.ts`:
 - **Date descriptions embed today's date** — `dateFromDesc()` / `dateToDesc()` called at request time so LLM resolves relative phrases correctly.
 - **Pre-filter before Gemini** — `guardInput()` blocks injection and off-topic queries server-side, saving API calls.
 - **Streaming over JSON** — SSE keeps UI responsive during multi-turn tool calls.
+- **Gemini backup key fallback** — `withRetry` in `chat/route.ts` accepts a key index and iterates through `getApiKeys()` (primary then backup). Quota errors (429 / `RESOURCE_EXHAUSTED` / `quota`) immediately switch to the next key with no delay. Transient errors (503) retry the same key up to 3 times with 1s/2s backoff. Non-retryable errors propagate immediately. The chat session is recreated with the new key on each call — no context is lost as history is passed from the request body. Configure via `GEMINI_API_KEY_BACKUP`; if unset, behaviour is unchanged.

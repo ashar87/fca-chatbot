@@ -1,7 +1,15 @@
 import { GoogleGenAI, Type, type Part, type FunctionDeclaration } from "@google/genai";
 import { searchNSMByCompany, searchNSMByLEI, searchNSMByContent, fetchPDFSummary, searchFIRDS, searchFITRS, getShortPositions } from "@/lib/fca-tools";
 
-const ai = new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY ?? "" });
+function makeClient(key: string) {
+  return new GoogleGenAI({ apiKey: key });
+}
+
+function getApiKeys(): string[] {
+  const primary = process.env.GEMINI_API_KEY ?? "";
+  const backup = process.env.GEMINI_API_KEY_BACKUP ?? "";
+  return [primary, ...(backup ? [backup] : [])].filter(Boolean);
+}
 
 const REDIRECT_MESSAGE =
   "I can only help with questions about the FCA Data Portal — try asking about NSM filings, FIRDS instruments, FITRS transparency data, or short selling positions.";
@@ -279,36 +287,63 @@ function guardInput(message: string): string | null {
   return null;
 }
 
-// ─── Gemini retry wrapper ────────────────────────────────────────────────────
+// ─── Gemini retry + key fallback wrapper ─────────────────────────────────────
 
+function isQuotaError(msg: string): boolean {
+  return (
+    msg.includes("429") ||
+    msg.includes("Too Many Requests") ||
+    msg.includes("RESOURCE_EXHAUSTED") ||
+    msg.includes("quota")
+  );
+}
+
+function isTransientError(msg: string): boolean {
+  return msg.includes("503") || msg.includes("Service Unavailable");
+}
+
+/**
+ * Calls fn(keyIndex) with retry logic.
+ * - Transient errors (503): retry same key with backoff (up to 3 attempts).
+ * - Quota errors (429/RESOURCE_EXHAUSTED): immediately switch to next key.
+ *   If all keys are exhausted, throws the last error.
+ */
 async function withRetry<T>(
-  fn: () => Promise<T>,
+  fn: (keyIndex: number) => Promise<T>,
   label: string,
-  maxAttempts = 3
 ): Promise<T> {
-  for (let attempt = 1; attempt <= maxAttempts; attempt++) {
-    try {
-      return await fn();
-    } catch (err) {
-      const msg = err instanceof Error ? err.message : String(err);
-      const isRetryable =
-        msg.includes("503") ||
-        msg.includes("429") ||
-        msg.includes("Service Unavailable") ||
-        msg.includes("Too Many Requests");
-      if (isRetryable && attempt < maxAttempts) {
-        const delay = Math.pow(2, attempt - 1) * 1000; // 1s, 2s
-        console.warn(
-          "[chat] gemini_retry label=%s attempt=%d/%d delay=%dms error=%s",
-          label, attempt, maxAttempts, delay, msg.slice(0, 120)
-        );
-        await new Promise((r) => setTimeout(r, delay));
-        continue;
+  const keys = getApiKeys();
+  let lastErr: Error = new Error("No API keys configured");
+
+  for (let keyIndex = 0; keyIndex < keys.length; keyIndex++) {
+    const isLastKey = keyIndex === keys.length - 1;
+    const keyLabel = keyIndex === 0 ? "primary" : `backup-${keyIndex}`;
+
+    for (let attempt = 1; attempt <= 3; attempt++) {
+      try {
+        return await fn(keyIndex);
+      } catch (err) {
+        const msg = err instanceof Error ? err.message : String(err);
+        lastErr = err instanceof Error ? err : new Error(msg);
+
+        if (isQuotaError(msg)) {
+          console.warn("[chat] gemini_quota_exceeded key=%s label=%s — %s", keyLabel, label, isLastKey ? "no more keys" : "trying next key");
+          break; // break inner loop → try next key
+        }
+
+        if (isTransientError(msg) && attempt < 3) {
+          const delay = Math.pow(2, attempt - 1) * 1000;
+          console.warn("[chat] gemini_retry key=%s label=%s attempt=%d/3 delay=%dms error=%s", keyLabel, label, attempt, delay, msg.slice(0, 120));
+          await new Promise((r) => setTimeout(r, delay));
+          continue;
+        }
+
+        throw lastErr; // non-retryable error — propagate immediately
       }
-      throw err;
     }
   }
-  throw new Error("Max retry attempts reached");
+
+  throw lastErr;
 }
 
 // ─── Rate limiting ────────────────────────────────────────────────────────────
@@ -345,6 +380,9 @@ export async function POST(req: Request) {
       headers: { "Content-Type": "application/json" },
     });
   }
+
+  const apiKeys = getApiKeys();
+  console.log("[chat] api_keys_available count=%d backup=%s", apiKeys.length, apiKeys.length > 1 ? "yes" : "no");
 
   let body: { messages: { role: string; content: string }[]; context?: string };
   try {
@@ -414,15 +452,6 @@ export async function POST(req: Request) {
         }));
 
         const lastMessage = messages[messages.length - 1];
-        const chat = ai.chats.create({
-          model: "gemini-2.5-flash",
-          history,
-          config: {
-            systemInstruction: SYSTEM_PROMPT,
-            tools: [{ functionDeclarations: TOOL_DECLARATIONS }],
-            thinkingConfig: { thinkingBudget: 0 }, // disable thinking for fast tool-use responses
-          },
-        });
 
         // Agentic loop — Gemini may request multiple tool calls (max 5 turns)
         let currentMessage: string | Part[] = lastMessage.content;
@@ -434,7 +463,19 @@ export async function POST(req: Request) {
           console.log("[chat] gemini turn=%d ip=%s", turn + 1, ip);
           const turnStart = Date.now();
           const response = await withRetry(
-            () => chat.sendMessage({ message: currentMessage }),
+            (keyIndex) => {
+              const client = makeClient(apiKeys[keyIndex]);
+              const chat = client.chats.create({
+                model: "gemini-2.5-flash",
+                history,
+                config: {
+                  systemInstruction: SYSTEM_PROMPT,
+                  tools: [{ functionDeclarations: TOOL_DECLARATIONS }],
+                  thinkingConfig: { thinkingBudget: 0 },
+                },
+              });
+              return chat.sendMessage({ message: currentMessage });
+            },
             `turn-${turn + 1}`
           );
           console.log("[chat] gemini turn=%d elapsed=%dms ip=%s", turn + 1, Date.now() - turnStart, ip);
