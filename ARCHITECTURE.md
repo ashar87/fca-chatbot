@@ -2,15 +2,12 @@
 
 ```mermaid
 flowchart LR
-    User([User]) --> ChatWidget
-    ChatWidget -->|POST SSE| API["/api/chat"]
-    API -->|pre-filter| Guard{guardInput}
-    Guard -->|blocked| ChatWidget
-    Guard -->|safe| Gemini[Gemini 2.5 Flash]
-    Gemini -->|tool calls| FCATools[fca-tools.ts]
-    FCATools -->|NSM searches| FCAProxy[Edge Proxy]
-    FCAProxy --> FCA[(FCA APIs)]
-    FCATools -->|FIRDS/FITRS/SSR| FCA
-    FCATools -->|results| Gemini
-    Gemini -->|streamed text| ChatWidget
+    User([User]) -->|types question| Chat[AI Chat Assistant]
+    Chat -->|safety check| Guard{Input Filter}
+    Guard -->|blocked| Chat
+    Guard -->|approved| AI[Gemini AI Model]
+    AI -->|searches| FCA[(FCA Data Portal)]
+    FCA -->|live data| AI
+    AI -->|streamed response| Chat
+    Chat -->|answer + document links| User
 ```
