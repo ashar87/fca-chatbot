@@ -18,9 +18,6 @@ export interface FITRSInstrumentRecord {
   relevantMarketAvgDailyTxCount: string;
 }
 
-function getText(el: Element, tag: string): string {
-  return el.getElementsByTagName(tag)[0]?.textContent?.trim() ?? "";
-}
 
 function parseXML(xmlText: string): FITRSInstrumentRecord[] {
   // Use regex-based extraction to avoid needing a DOM parser in Node.js
