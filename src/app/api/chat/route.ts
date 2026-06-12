@@ -44,7 +44,7 @@ Keep clarifying questions short. Offer options so the user can reply with a sing
 1. Always retrieve data using your tools — never invent or guess values.
 2. Always cite the source: include the record URL or document link when available.
 3. Format results clearly using markdown tables or bullet points.
-4. When showing NSM results, include: headline, filing type, company, date, and a clickable link.
+4. When showing NSM results, you MUST include a clickable markdown link for every single filing using its url field — format as [View document](url). Never omit the link. If a filing has no url, write "No link available".
 5. If data is unavailable or the query is out of scope, say so clearly.
 6. Be concise: lead with the direct answer, then provide supporting detail.
 7. Mention the total number of matching records when returning NSM results (e.g. "Found 19,985 filings — showing the 50 most recent").
@@ -462,10 +462,12 @@ export async function POST(req: Request) {
                   console.error("[chat] tool_error tool=%s error=%s ip=%s", fc.name, errMsg, ip);
                   output = { error: errMsg };
                 }
+                // For NSM search tools, annotate each filing's url field so Gemini always includes it
+                const annotated = annotateToolOutput(fc.name ?? "", output);
                 return {
                   functionResponse: {
                     name: fc.name ?? "",
-                    response: { result: JSON.stringify(output) },
+                    response: { result: JSON.stringify(annotated) },
                   },
                 } satisfies Part;
               })
@@ -523,6 +525,25 @@ export async function POST(req: Request) {
       "Transfer-Encoding": "chunked",
     },
   });
+}
+
+/**
+ * For NSM search results, explicitly label each filing's url so Gemini
+ * cannot overlook it when composing the response.
+ */
+function annotateToolOutput(toolName: string, output: unknown): unknown {
+  const nsmTools = ["search_nsm_by_company", "search_nsm_by_lei", "search_nsm_by_content"];
+  if (!nsmTools.includes(toolName)) return output;
+  const result = output as { total: number; filings: Record<string, unknown>[] };
+  if (!result?.filings) return output;
+  return {
+    ...result,
+    filings: result.filings.map((f) => ({
+      ...f,
+      document_link: f.url,
+      _instruction: "You MUST include document_link as a markdown hyperlink in your response for this filing.",
+    })),
+  };
 }
 
 async function executeTool(name: string, input: Record<string, unknown>): Promise<unknown> {
