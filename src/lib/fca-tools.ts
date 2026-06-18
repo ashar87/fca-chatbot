@@ -200,7 +200,7 @@ export async function searchNSMByCompany(params: {
   const cached = nsmCacheGet(cacheKey);
   if (cached) return cached;
 
-  const from = (params.page ?? 0) * 50;
+  const from = (params.page ?? 0) * 10;
 
   const criteria: unknown[] = [
     { name: "company_lei", value: [params.company, "", "disclose_org", "related_org"] },
@@ -215,7 +215,7 @@ export async function searchNSMByCompany(params: {
 
   const body = {
     from,
-    size: 50,
+    size: 10,
     sort: "submitted_date",
     sortorder: "desc",
     criteriaObj: { criteria, dateCriteria: buildDateCriteria(params.date_from, params.date_to) },
@@ -253,7 +253,7 @@ export async function searchNSMByLEI(params: {
   const cached = nsmCacheGet(cacheKey);
   if (cached) return cached;
 
-  const from = (params.page ?? 0) * 50;
+  const from = (params.page ?? 0) * 10;
 
   const criteria: unknown[] = [
     { name: "company_lei", value: ["", params.lei, "disclose_org", "related_org"] },
@@ -268,7 +268,7 @@ export async function searchNSMByLEI(params: {
 
   const body = {
     from,
-    size: 50,
+    size: 10,
     sort: "submitted_date",
     sortorder: "desc",
     criteriaObj: { criteria, dateCriteria: buildDateCriteria(params.date_from, params.date_to) },
@@ -307,7 +307,7 @@ export async function searchNSMByContent(params: {
   const cached = nsmCacheGet(cacheKey);
   if (cached) return cached;
 
-  const from = (params.page ?? 0) * 50;
+  const from = (params.page ?? 0) * 10;
 
   const criteria: unknown[] = [
     { name: "document_content", value: [params.keywords, params.matchMode ?? "any_word"] },
@@ -322,7 +322,7 @@ export async function searchNSMByContent(params: {
 
   const body = {
     from,
-    size: 50,
+    size: 10,
     sort: "submitted_date",
     sortorder: "desc",
     criteriaObj: { criteria, dateCriteria: buildDateCriteria(params.date_from, params.date_to) },

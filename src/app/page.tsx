@@ -8,7 +8,7 @@ import Footer from "@/components/Footer";
 import NSMSearchPage from "@/components/NSMSearchPage";
 import FIRDSSearchPage from "@/components/FIRDSSearchPage";
 import FITRSSearchPage from "@/components/FITRSSearchPage";
-import ShortSellingPage from "@/components/ShortSellingPage";
+// import ShortSellingPage from "@/components/ShortSellingPage";
 import ChatWidget from "@/components/ChatWidget";
 import { PortalSection } from "@/components/NavTabs";
 
@@ -41,7 +41,7 @@ export default function Home() {
       case "nsm-about":       return <AboutNSM />;
       case "firds":           return <FIRDSSearchPage />;
       case "fitrs":           return <FITRSSearchPage />;
-      case "short-selling":   return <ShortSellingPage />;
+      // case "short-selling":   return <ShortSellingPage />;
     }
   }
 

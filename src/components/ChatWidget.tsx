@@ -29,11 +29,11 @@ const STARTER_PROMPTS: Record<PortalSection, string[]> = {
     "Show me the latest full transparency files",
     "List delta files published in the last 7 days",
   ],
-  "short-selling": [
-    "What are the current disclosed short positions in Rolls-Royce?",
-    "Which companies have short positions above 1% right now?",
-    "What must I report if my short position hits 0.2%?",
-  ],
+  // "short-selling": [
+  //   "What are the current disclosed short positions in Rolls-Royce?",
+  //   "Which companies have short positions above 1% right now?",
+  //   "What must I report if my short position hits 0.2%?",
+  // ],
 };
 
 interface Props {

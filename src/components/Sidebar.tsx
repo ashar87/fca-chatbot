@@ -58,12 +58,17 @@ export default function Sidebar({ activeSection, onSectionChange }: Props) {
         >
           Financial Instruments Transparency System
         </button>
+        {/* Short Selling Register — disabled until API endpoint is confirmed
         <button
           className={`sidebar-link w-full${activeSection === "short-selling" ? " active" : ""}`}
           onClick={() => onSectionChange("short-selling")}
         >
           Short Selling Register
         </button>
+        */}
+        <span className="sidebar-link" style={{ color: "#888", cursor: "default" }}>
+          Short Selling Register
+        </span>
         <span className="sidebar-link" style={{ color: "#888", cursor: "default" }}>
           Securitisations – STS Notifications
         </span>
