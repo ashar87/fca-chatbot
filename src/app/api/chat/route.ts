@@ -447,7 +447,7 @@ export async function POST(req: Request) {
 
       try {
         // Convert message history to Gemini Content format
-        const history = messages.slice(0, -1).map((m) => ({
+        const initialHistory = messages.slice(0, -1).map((m) => ({
           role: m.role === "assistant" ? "model" : "user",
           parts: [{ text: m.content }],
         }));
@@ -455,7 +455,10 @@ export async function POST(req: Request) {
         const lastMessage = messages[messages.length - 1];
 
         // Agentic loop — Gemini may request multiple tool calls (max 5 turns)
+        // localHistory grows after each turn so that a key-switch or retry on any
+        // turn always receives the full context including prior function call/response pairs.
         let currentMessage: string | Part[] = lastMessage.content;
+        let localHistory: { role: string; parts: Part[] }[] = [...initialHistory];
         sendStatus("Thinking…");
         let totalTurns = 0;
         let responseGenerated = false;
@@ -468,7 +471,7 @@ export async function POST(req: Request) {
               const client = makeClient(apiKeys[keyIndex]);
               const chat = client.chats.create({
                 model: "gemini-2.5-flash",
-                history,
+                history: localHistory,
                 config: {
                   systemInstruction: SYSTEM_PROMPT,
                   tools: [{ functionDeclarations: TOOL_DECLARATIONS }],
@@ -525,6 +528,21 @@ export async function POST(req: Request) {
                 } satisfies Part;
               })
             );
+
+            // Grow localHistory: append what was sent (user turn) + what model returned (function calls).
+            // This ensures any retry or key-switch on the next turn sees the complete exchange and
+            // never receives function response parts without a preceding function call.
+            const sentParts: Part[] = typeof currentMessage === "string"
+              ? [{ text: currentMessage }]
+              : (currentMessage as Part[]);
+            const modelFunctionCallParts: Part[] = functionCalls.map((fc) => ({
+              functionCall: { name: fc.name ?? "", args: (fc.args ?? {}) as Record<string, unknown> },
+            }));
+            localHistory = [
+              ...localHistory,
+              { role: "user", parts: sentParts },
+              { role: "model", parts: modelFunctionCallParts },
+            ];
 
             sendStatus("Processing results…");
             // Feed tool results back as function response parts

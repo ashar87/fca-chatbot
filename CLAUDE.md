@@ -2,7 +2,7 @@
 
 A visual clone of [data.fca.org.uk](https://data.fca.org.uk) with an embedded AI chatbot that answers questions using live FCA public data. Built as a stakeholder demo; not a production deployment.
 
-> **Keeping this file current:** Update CLAUDE.md whenever you add a new API endpoint, change a search function, add a new tool to Gemini, or discover a new FCA API behaviour. The sections most likely to go stale are: [AI Tools](#ai-tools-gemini-function-declarations), [FCA API Details](#fca-api-details), and [Key Design Decisions](#key-design-decisions).
+> **Keeping this file current:** Update CLAUDE.md whenever you add a new API endpoint, change a search function, add a new tool to Gemini, or discover a new FCA API behaviour. The sections most likely to go stale are: [AI Tools](#ai-tools-gemini-function-declarations), [FCA API Details](#fca-api-details), [REST API Endpoints](#rest-api-endpoints), and [Key Design Decisions](#key-design-decisions).
 
 ---
 
@@ -28,15 +28,14 @@ src/
 ├── app/
 │   ├── page.tsx                     # Root page — two-column layout, section state
 │   ├── layout.tsx                   # HTML shell, global font/metadata
-│   ├── globals.css                  # CSS variables, FCA form/table/sidebar classes
+│   ├── globals.css                  # CSS variables, FCA form/table/sidebar/chat classes
 │   └── api/
 │       ├── chat/route.ts            # AI chat endpoint (POST, streaming SSE)
 │       ├── fca-proxy/route.ts       # Edge-runtime proxy for NSM (bypasses Cloudflare)
 │       ├── nsm/route.ts             # NSM search REST endpoint (GET)
 │       ├── firds/route.ts           # FIRDS search REST endpoint (GET)
 │       ├── fitrs/route.ts           # FITRS file index search endpoint (GET)
-│       ├── fitrs-file/route.ts      # FITRS ZIP download + XML parse endpoint (GET)
-│       └── short-selling/route.ts   # Short selling REST endpoint (GET)
+│       └── fitrs-file/route.ts      # FITRS ZIP download + XML parse endpoint (GET)
 ├── components/
 │   ├── ChatWidget.tsx               # Floating chat panel, SSE streaming, starter prompts
 │   ├── Header.tsx                   # White header with FCA logo
@@ -46,8 +45,7 @@ src/
 │   ├── NavTabs.tsx                  # Exports PortalSection type (no rendered component)
 │   ├── NSMSearchPage.tsx            # NSM search form matching real portal layout
 │   ├── FIRDSSearchPage.tsx          # FIRDS instrument search page
-│   ├── FITRSSearchPage.tsx          # FITRS file browser with inline ZIP/XML extraction
-│   └── ShortSellingPage.tsx         # Short selling register page
+│   └── FITRSSearchPage.tsx          # FITRS file browser with inline ZIP/XML extraction
 └── lib/
     └── fca-tools.ts                 # All FCA API calls + data models
 ```
@@ -68,7 +66,7 @@ src/
 │ • List of Regs    │                                 │
 │   - FIRDS         │                                 │
 │   - FITRS         │                                 │
-│   - Short Selling │                                 │
+│   - Short Selling │ (greyed out — disabled)         │
 ├───────────────────┴─────────────────────────────────┤
 │ [DARK FOOTER — copyright | back to top | links]     │
 └─────────────────────────────────────────────────────┘
@@ -78,7 +76,8 @@ src/
 
 `PortalSection` (in `NavTabs.tsx`):
 ```ts
-type PortalSection = "nsm-search" | "nsm-about" | "firds" | "fitrs" | "short-selling";
+type PortalSection = "nsm-search" | "nsm-about" | "firds" | "fitrs";
+// "short-selling" is commented out — re-enable once correct FCA API endpoint is confirmed
 ```
 
 ## CSS Design System
@@ -93,13 +92,15 @@ type PortalSection = "nsm-search" | "nsm-about" | "firds" | "fitrs" | "short-sel
 | `.fca-field` | Field cell padding |
 | `.fca-input` | White input, grey border, no border-radius, yellow focus ring |
 | `.fca-select` | Matching select element |
-| `.fca-btn-primary` | Purple button, no border-radius |
-| `.fca-btn-secondary` | Grey secondary button |
+| `.fca-btn-primary` | Purple button, no border-radius, yellow `:focus-visible` ring |
+| `.fca-btn-secondary` | Grey secondary button, yellow `:focus-visible` ring |
 | `.fca-table` | Results table with purple header, alternating rows |
 | `.sidebar-section-header` | Purple sidebar section header |
 | `.sidebar-item` | Grey sub-item (for NSM sub-pages) |
 | `.sidebar-link` | Blue-link register items |
 | `.content-panel` | Bordered white content area |
+| `.chat-input` | Chat text input — CSS-only yellow focus ring (no JS handlers) |
+| `.sr-only` | Visually hidden — accessible to screen readers only |
 
 ## Colour Palette
 
@@ -135,6 +136,18 @@ ChatWidget (renders markdown, streams word-by-word)
 
 The chat route runs an **agentic loop** (max 5 turns): Gemini can call multiple tools in sequence before producing a final answer.
 
+### Agentic Loop — localHistory
+
+Each Gemini turn creates a fresh `client.chats.create({ history })`. To ensure the function call / function response pairs remain contiguous across turns (required by the Gemini API), a `localHistory` array grows after each turn:
+
+```
+turn 1:  localHistory = [initial messages]  →  model returns function call
+         localHistory += [user parts sent] + [model function call parts]
+turn 2:  localHistory = [initial + turn 1 exchange]  →  model reads results, returns text
+```
+
+Without this, turn 2 would send function response parts with no preceding function call in history, causing a 400 `INVALID_ARGUMENT` error. This also makes key-switching safe — a new key always gets the full context.
+
 ### Streaming
 
 `/api/chat` returns a `text/event-stream` response. Two SSE frame types:
@@ -154,13 +167,99 @@ Terminated by `data: [DONE]`.
 | `fetch_pdf_summary` | `Reading document…` |
 | `search_firds` | `Looking up FIRDS instrument…` |
 | `search_fitrs` | `Searching FITRS files…` |
-| `get_short_positions` | `Fetching short positions…` |
+
+---
+
+## REST API Endpoints
+
+All endpoints are internal — called by the UI pages and the chat route's `executeTool()`. They are thin wrappers over `fca-tools.ts` functions.
+
+### `GET /api/nsm`
+
+NSM search. Mode is selected by the `mode` param.
+
+| Param | Values | Description |
+|---|---|---|
+| `mode` | `company` (default), `lei`, `content` | Search mode |
+| `query` | string | Company name (mode=company) |
+| `lei` | string | LEI code (mode=lei) |
+| `keywords` | string | Keywords (mode=content) |
+| `match_mode` | `any_word`, `all_words`, `exact_match` | Match behaviour for content search |
+| `date_from` / `date_to` | YYYY-MM-DD | Filing date range |
+| `pub_date_from` / `pub_date_to` | YYYY-MM-DD | Publication date range (takes priority over date_from/to) |
+| `source` | string | Optional source filter (e.g. "RNS") |
+
+Returns: `{ results: NSMFiling[], total: number }`
+
+### `GET /api/firds`
+
+FIRDS instrument lookup. At least one param required.
+
+| Param | Description |
+|---|---|
+| `isin` | ISIN code (e.g. GB0002875804) |
+| `instrument_id` | Instrument identification code |
+| `issuer_lei` | LEI of issuer |
+| `classification` | CFI classification code |
+| `name` | Keyword / instrument name |
+
+Returns: `{ results: FIRDSInstrument[], total: number }`
+
+### `GET /api/fitrs`
+
+FITRS file index search.
+
+| Param | Description |
+|---|---|
+| `date_from` | Start of publication date range (YYYY-MM-DD) |
+| `date_to` | End of publication date range (YYYY-MM-DD) |
+| `file_type` | `Full` or `Delta` |
+| `keyword` | Optional keyword filter on file name |
+
+Returns: `{ total: number, files: FITRSFile[] }`
+
+### `GET /api/fitrs-file`
+
+Downloads a FITRS ZIP file and parses the XML inside it server-side.
+
+| Param | Description |
+|---|---|
+| `url` | Full URL of a FITRS ZIP file — must start with `https://data.fca.org.uk/artefacts/FITRS/` |
+
+Returns: `{ total: number, records: FITRSInstrumentRecord[] }`
+
+Only FCA artefact URLs are permitted — any other URL returns 400.
+
+### `POST /api/fca-proxy`
+
+Edge-runtime pass-through proxy for `api.data.fca.org.uk`. Used internally by `fcaPost()` when running on Vercel to route NSM requests through CDN edge IPs (bypasses Cloudflare blocking).
+
+| Query param | Description |
+|---|---|
+| `index` | FCA index name (e.g. `fca-nsm-searchdata`) |
+
+Body is forwarded verbatim to the FCA API. Response is forwarded back.
+
+Not intended to be called directly from the UI.
+
+### `POST /api/chat`
+
+AI chat endpoint. Accepts conversation history, runs the Gemini agentic loop, streams SSE.
+
+| Body field | Description |
+|---|---|
+| `messages` | Array of `{ role: "user" \| "assistant", content: string }` |
+| `context` | Active portal section (passed for routing context) |
+
+Returns: `text/event-stream` — see [Streaming](#streaming) above.
+
+Rate limited: 20 requests per IP per minute (in-memory, resets on server restart).
 
 ---
 
 ## AI Tools (Gemini Function Declarations)
 
-The LLM has access to **seven tools**.
+The LLM has access to **six tools** (short selling disabled).
 
 ### NSM Tools
 
@@ -171,6 +270,8 @@ Split into three because the FCA API uses different `criteriaObj` shapes per cas
 | `search_nsm_by_company` | `company_lei: [name, "", "disclose_org", "related_org"]` | "Show me Barclays filings" |
 | `search_nsm_by_lei` | `company_lei: ["", LEI_CODE, "disclose_org", "related_org"]` | User provides a LEI code |
 | `search_nsm_by_content` | `document_content: [keywords, "any_word"]` | "Find docs mentioning climate risk" |
+
+All NSM tools return **10 results per page** (down from 50 — reduces latency). Use `page: 1`, `page: 2` etc. to paginate when the user asks for more.
 
 ### FIRDS Tool — `search_firds`
 
@@ -205,7 +306,14 @@ Returns: list of files with `fileName`, `fileType`, `publicationDate`, `download
 | Tool | Backend function | Description |
 |---|---|---|
 | `fetch_pdf_summary` | `fetchPDFSummary` | Downloads NSM PDF, extracts up to 50k chars, keyword-targeted window |
-| `get_short_positions` | `getShortPositions` | Fetches FCA SSR positions, filters by issuer name or threshold |
+
+### Disabled Tools
+
+| Tool | Reason |
+|---|---|
+| `get_short_positions` | SSR API endpoint not confirmed — all code commented out, not deleted |
+
+To re-enable: uncomment in `chat/route.ts` (import, tool declaration, status label, executeTool case), `NavTabs.tsx`, `Sidebar.tsx`, `ChatWidget.tsx`, and `page.tsx`.
 
 ---
 
@@ -237,7 +345,7 @@ Content-Type: application/json
 ```json
 {
   "from": 0,
-  "size": 20,
+  "size": 10,
   "sort": "field_name",
   "sortorder": "asc|desc",
   "keyword": "search term or null",
@@ -255,6 +363,7 @@ When using `keyword` search, set `criteriaObj: null`. When using `criteriaObj`, 
 - **Date format:** ISO 8601 without milliseconds (`.000Z` is rejected — strip to `Z`)
 - **Soft-block detection:** `took < 10ms` + `value: 0` = Cloudflare block (real ES always takes >10ms)
 - **`latest_flag: Y`** must always be included in NSM criteria
+- **Page size:** 10 results per page (`size: 10`). Paginate with `from: page * 10`.
 
 ### FIRDS-specific Notes
 
@@ -357,12 +466,6 @@ Add to `.env.local` for local development.
 
 ---
 
-## Short Selling Data
-
-Positions are fetched from the FCA SSR endpoint and cached in-memory for **2 hours** (`CACHE_TTL`). Cache resets on cold starts. Filtered in-memory by `issuer_name` and/or `above_threshold` after fetch.
-
----
-
 ## Running Locally
 
 ```bash
@@ -375,6 +478,21 @@ App runs at `http://localhost:3000`.
 
 ---
 
+## Chat Widget
+
+The floating chat widget (`ChatWidget.tsx`) has the following behaviours:
+
+- **Trigger button** bottom-right, visible when panel is closed
+- **Panel** opens as a fixed overlay (380px wide, adaptive height: `min(520px, calc(100dvh - 96px))`)
+- **Section subtitle** in header shows active register context (NSM / FIRDS / FITRS)
+- **Starter prompts** shown when no messages; accessible via 💡 button during a conversation
+- **Clear conversation** requires two clicks — first click shows "Confirm?", second click clears. Auto-reverts after 3 seconds.
+- **Disclaimer** ("Not financial or regulatory advice") shown only on the last completed assistant message, not on every message
+- **Accessibility:** `role="dialog"`, `aria-modal`, `aria-labelledby`, `aria-label` on all icon buttons, `aria-live` regions for status text and completed responses, focus trap (input focuses on open, trigger refocuses on close)
+- **Focus ring** on chat input is CSS-only via `.chat-input:focus` — no JS `onFocus`/`onBlur` handlers
+
+---
+
 ## Model Behaviour (System Prompt)
 
 ### Tool routing
@@ -383,6 +501,7 @@ App runs at `http://localhost:3000`.
 - FIRDS → use the most precise identifier available (instrument_id > isin > issuer_lei > classification > name)
 - FITRS → browse by date range; remind user files are ZIP downloads containing XML transparency data
 - PDF fetch only triggered when user explicitly asks for content from inside a document
+- NSM returns 10 results; Gemini uses `page: 1`, `page: 2` etc. when user asks for more/older results
 
 ### PDF extraction (`fetchPDFSummary`)
 - **50,000 character limit**
@@ -411,6 +530,7 @@ Two-layer defence in `chat/route.ts`:
 - **`company_lei` over `document_content` for company searches** — `document_content` searches document bodies, not company name index.
 - **`disclose_org` + `related_org` scope flags** — without these, API only matches on the primary `lei` field.
 - **LEI vs. name tradeoff** — name search returns ~2.6× more results (matches fund names); LEI search is scoped to the legal entity.
+- **NSM page size reduced to 10** — was 50; reduces FCA API response time significantly. Gemini paginates on user request using `page` param.
 - **Five FIRDS search modes with priority ordering** — criteria-based searches (instrument_id, ISIN, issuer LEI, classification) are more precise than keyword. Priority ensures the most specific identifier is always used.
 - **FIRDS detail URL from `seq_id`** — every FIRDS hit contains `seq_id`; `https://data.fca.org.uk/#/moreinfo/{seq_id}` links to the full instrument detail page.
 - **FITRS is a file index, not a lookup API** — the correct API returns ZIP files containing XML with thousands of instrument records. The old per-ISIN proxy endpoint does not exist. The `/api/fitrs-file` route handles download + extraction + parsing server-side.
@@ -419,4 +539,6 @@ Two-layer defence in `chat/route.ts`:
 - **Date descriptions embed today's date** — `dateFromDesc()` / `dateToDesc()` called at request time so LLM resolves relative phrases correctly.
 - **Pre-filter before Gemini** — `guardInput()` blocks injection and off-topic queries server-side, saving API calls.
 - **Streaming over JSON** — SSE keeps UI responsive during multi-turn tool calls.
-- **Gemini backup key fallback** — `withRetry` in `chat/route.ts` accepts a key index and iterates through `getApiKeys()` (primary then backup). Quota errors (429 / `RESOURCE_EXHAUSTED` / `quota`) immediately switch to the next key with no delay. Transient errors (503) retry the same key up to 3 times with 1s/2s backoff. Non-retryable errors propagate immediately. The chat session is recreated with the new key on each call — no context is lost as history is passed from the request body. Configure via `GEMINI_API_KEY_BACKUP`; if unset, behaviour is unchanged.
+- **Gemini backup key fallback** — `withRetry` in `chat/route.ts` accepts a key index and iterates through `getApiKeys()` (primary then backup). Quota errors (429 / `RESOURCE_EXHAUSTED` / `quota`) immediately switch to the next key with no delay. Transient errors (503) retry the same key up to 3 times with 1s/2s backoff. Non-retryable errors propagate immediately. Configure via `GEMINI_API_KEY_BACKUP`; if unset, behaviour is unchanged.
+- **`localHistory` grows per turn** — each agentic loop turn appends the sent parts + model function call parts to `localHistory`. This ensures function response parts always follow a function call in history, preventing 400 `INVALID_ARGUMENT` errors on turn 2+. Also makes key-switching safe mid-loop.
+- **Short selling disabled** — `get_short_positions` tool and all related UI are commented out (not deleted). The SSR proxy endpoints tried (`/api/proxy/ssr/positions`, `/api/proxy/public/short-positions`) returned no data. Re-enable once the correct FCA API endpoint is confirmed.
