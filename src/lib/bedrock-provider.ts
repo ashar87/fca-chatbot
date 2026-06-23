@@ -1,7 +1,3 @@
-import {
-  BedrockRuntimeClient,
-  InvokeModelWithResponseStreamCommand,
-} from "@aws-sdk/client-bedrock-runtime";
 import type { FunctionDeclaration } from "@google/genai";
 
 // ─── Credential check ─────────────────────────────────────────────────────────
@@ -170,6 +166,10 @@ export async function runBedrockLoop({
 }): Promise<boolean> {
   void toolDeclarations; // already converted to tools; kept for symmetry with caller signature
 
+  // Dynamic import so the AWS SDK is never bundled on Vercel (where credentials are absent)
+  const { BedrockRuntimeClient, InvokeModelWithResponseStreamCommand } =
+    await import("@aws-sdk/client-bedrock-runtime");
+
   const client = new BedrockRuntimeClient({
     region: process.env.AWS_REGION ?? "eu-west-1",
     credentials: {
@@ -190,7 +190,7 @@ export async function runBedrockLoop({
   const lastMessage = messages[messages.length - 1];
 
   // Anthropic requires alternating user/assistant turns — convert Gemini history
-  let anthropicMessages: AnthropicMessage[] = toAnthropicHistory(geminiHistory);
+  const anthropicMessages: AnthropicMessage[] = toAnthropicHistory(geminiHistory);
 
   // Append the current user message
   anthropicMessages.push({
