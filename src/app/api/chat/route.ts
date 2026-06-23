@@ -1,5 +1,6 @@
 import { GoogleGenAI, Type, type Part, type FunctionDeclaration } from "@google/genai";
 import { searchNSMByCompany, searchNSMByLEI, searchNSMByContent, fetchPDFSummary, searchFIRDS, searchFITRS /*, getShortPositions*/ } from "@/lib/fca-tools";
+import { isBedrockAvailable, isBedrockAuthError, toAnthropicTools, runBedrockLoop } from "@/lib/bedrock-provider";
 
 function makeClient(key: string) {
   return new GoogleGenAI({ apiKey: key });
@@ -51,8 +52,16 @@ Keep clarifying questions short. Offer options so the user can reply with a sing
 ## Rules:
 1. Always retrieve data using your tools — never invent or guess values.
 2. Always cite the source: include the record URL or document link when available.
-3. Format results clearly using markdown tables or bullet points.
-4. When showing NSM results, you MUST include a clickable markdown link for every single filing using its url field — format as [View document](url). Never omit the link. If a filing has no url, write "No link available".
+3. Format all search results as bullet lists — see rules 4, 4a, and 4b for the required format per data source.
+4. When showing NSM results, you MUST present every filing as a bullet point in this exact format:
+   - **[Headline](url)** — Type · Date
+   Never use a prose sentence or a table for NSM filing lists. Never omit the link — if a filing has no url, write the headline in bold with no link and append "· No link available".
+4a. When showing FIRDS results, you MUST present every instrument as a bullet point in this exact format:
+   - **[Full Name](detailUrl)** — ISIN: {isin} · CFI: {cfi} · MIC: {mic}
+   Never use a prose sentence or a table for FIRDS results.
+4b. When showing FITRS results, you MUST present every file as a bullet point in this exact format:
+   - **[File Name](downloadLink)** — Type: {type} · Published: {publicationDate}
+   Never use a prose sentence or a table for FITRS results.
 5. If data is unavailable or the query is out of scope, say so clearly.
 6. Be concise: lead with the direct answer, then provide supporting detail.
 7. Mention the total number of matching records when returning NSM results (e.g. "Found 19,985 filings — showing the 10 most recent"). If the user asks for more or older results, call the same tool again with page: 1, page: 2, etc.
@@ -156,7 +165,7 @@ Do NOT use this to find a company's own filings — use search_nsm_by_company fo
   },
   {
     name: "fetch_pdf_summary",
-    description: `Fetch and extract text from a publicly accessible NSM PDF document.
+    description: `Fetch and extract text from a publicly accessible NSM document — supports both PDF and HTML formats.
 Only call this when the user explicitly asks for information FROM a document — e.g. "summarise the key risks", "what does it say about capital requirements", "extract the revenue figures".
 Do NOT call this when simply listing or returning search results — in that case, return the document links and let the user decide whether to read further.
 The tool returns up to 50,000 characters. If extraction_prompt is provided, it locates the first match in the full document and returns the surrounding text — always set this to the topic the user is asking about.
@@ -164,7 +173,7 @@ After receiving the extracted text, answer the user's question directly using th
     parameters: {
       type: Type.OBJECT,
       properties: {
-        url: { type: Type.STRING, description: "The full public URL of the PDF document (must start with https://data.fca.org.uk/artefacts/)" },
+        url: { type: Type.STRING, description: "The full public URL of the document — PDF or HTML (must start with https://data.fca.org.uk/artefacts/)" },
         extraction_prompt: { type: Type.STRING, description: "Keywords describing what to extract — e.g. 'key risks', 'revenue', 'directors', 'capital requirements'. The tool will scan the document and return text around the first match." },
       },
       required: ["url", "extraction_prompt"],
@@ -374,16 +383,18 @@ export async function POST(req: Request) {
     });
   }
 
-  if (!process.env.GEMINI_API_KEY) {
-    console.error("[chat] missing GEMINI_API_KEY");
-    return new Response(JSON.stringify({ error: "GEMINI_API_KEY is not configured. Add it to .env.local." }), {
+  const bedrockReady = isBedrockAvailable();
+  const apiKeys = getApiKeys();
+
+  if (!bedrockReady && apiKeys.length === 0) {
+    console.error("[chat] no LLM credentials configured");
+    return new Response(JSON.stringify({ error: "No LLM provider configured. Set AWS credentials or GEMINI_API_KEY in .env.local." }), {
       status: 500,
       headers: { "Content-Type": "application/json" },
     });
   }
 
-  const apiKeys = getApiKeys();
-  console.log("[chat] api_keys_available count=%d backup=%s", apiKeys.length, apiKeys.length > 1 ? "yes" : "no");
+  console.log("[chat] provider=%s gemini_keys=%d", bedrockReady ? "bedrock" : "gemini", apiKeys.length);
 
   let body: { messages: { role: string; content: string }[]; context?: string };
   try {
@@ -446,6 +457,42 @@ export async function POST(req: Request) {
       }
 
       try {
+        let responseGenerated = false;
+
+        // ── Bedrock (primary) ──────────────────────────────────────────────────
+        if (bedrockReady) {
+          try {
+            responseGenerated = await runBedrockLoop({
+              messages,
+              systemPrompt: SYSTEM_PROMPT,
+              tools: toAnthropicTools(TOOL_DECLARATIONS),
+              toolDeclarations: TOOL_DECLARATIONS,
+              executeTool: (name, input) => executeTool(name, input),
+              send,
+              sendStatus,
+              toolStatusLabel,
+              ip,
+              reqStart,
+            });
+          } catch (err) {
+            if (isBedrockAuthError(err)) {
+              const msg = err instanceof Error ? err.message : String(err);
+              console.warn("[chat] bedrock_auth_error — falling back to Gemini. error=%s ip=%s", msg.slice(0, 120), ip);
+              sendStatus("Switching provider…");
+              // fall through to Gemini below
+            } else {
+              throw err; // non-auth Bedrock error — propagate
+            }
+          }
+        }
+
+        // ── Gemini (fallback) ──────────────────────────────────────────────────
+        if (!responseGenerated) {
+        if (apiKeys.length === 0) {
+          send("AWS session has expired and no Gemini API key is configured. Please refresh your AWS credentials.");
+          return;
+        }
+
         // Convert message history to Gemini Content format
         const initialHistory = messages.slice(0, -1).map((m) => ({
           role: m.role === "assistant" ? "model" : "user",
@@ -459,9 +506,8 @@ export async function POST(req: Request) {
         // turn always receives the full context including prior function call/response pairs.
         let currentMessage: string | Part[] = lastMessage.content;
         let localHistory: { role: string; parts: Part[] }[] = [...initialHistory];
-        sendStatus("Thinking…");
+        if (!bedrockReady) sendStatus("Thinking…");
         let totalTurns = 0;
-        let responseGenerated = false;
         for (let turn = 0; turn < 5; turn++) {
           totalTurns = turn + 1;
           console.log("[chat] gemini turn=%d ip=%s", turn + 1, ip);
@@ -576,6 +622,7 @@ export async function POST(req: Request) {
           console.warn("[chat] max_turns_reached turns=%d totalElapsed=%dms ip=%s — no text response generated", totalTurns, Date.now() - reqStart, ip);
           send("I retrieved some data but wasn't able to summarise it. Please try rephrasing your question or ask for something more specific.");
         }
+        } // end if (!responseGenerated) — Gemini fallback block
       } catch (err: unknown) {
         const msg = err instanceof Error ? err.message : "Unknown error";
         console.error("[chat] fatal_error error=%s elapsed=%dms ip=%s", msg, Date.now() - reqStart, ip);

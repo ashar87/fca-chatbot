@@ -361,21 +361,85 @@ export async function searchNSM(params: {
   return filings;
 }
 
-export async function fetchPDFSummary(pdfUrl: string, extractionPrompt?: string): Promise<string> {
+/**
+ * Finds the earliest position in text that matches any word from the prompt.
+ * Falls back to a full-phrase match first, then tries individual words so that
+ * multi-word prompts like "director PDMR shareholding" still find a relevant anchor.
+ * Stopwords are skipped so common words don't produce unhelpful anchors.
+ */
+const STOPWORDS = new Set(["a", "an", "the", "in", "on", "at", "to", "of", "for", "and", "or", "is", "it", "by", "be", "with", "from", "as", "this", "that", "are", "was", "were", "has", "have"]);
+
+function findBestAnchor(fullTextLower: string, prompt: string): number {
+  const promptLower = prompt.toLowerCase();
+  // 1. Try exact phrase first
+  const phraseIdx = fullTextLower.indexOf(promptLower);
+  if (phraseIdx !== -1) return phraseIdx;
+  // 2. Try each meaningful word, return earliest hit
+  const words = promptLower.split(/\s+/).filter((w) => w.length > 2 && !STOPWORDS.has(w));
+  let best = -1;
+  for (const word of words) {
+    const idx = fullTextLower.indexOf(word);
+    if (idx !== -1 && (best === -1 || idx < best)) best = idx;
+  }
+  return best;
+}
+
+function extractTextFromHtml(html: string): string {
+  return html
+    .replace(/<script[\s\S]*?<\/script>/gi, " ")
+    .replace(/<style[\s\S]*?<\/style>/gi, " ")
+    .replace(/<[^>]+>/g, " ")
+    .replace(/&nbsp;/gi, " ")
+    .replace(/&amp;/gi, "&")
+    .replace(/&lt;/gi, "<")
+    .replace(/&gt;/gi, ">")
+    .replace(/&quot;/gi, '"')
+    .replace(/&#39;/gi, "'")
+    .replace(/\s{2,}/g, " ")
+    .trim();
+}
+
+export async function fetchPDFSummary(docUrl: string, extractionPrompt?: string): Promise<string> {
   const start = Date.now();
   let res: Response;
   try {
-    res = await fetch(pdfUrl, { headers: { "User-Agent": "FCA-Demo-Bot/1.0" } });
+    res = await fetch(docUrl, { headers: { "User-Agent": "FCA-Demo-Bot/1.0" } });
   } catch (err) {
-    console.error("[fca-tools] fetchPDFSummary fetch_error url=%s error=%s", pdfUrl, (err as Error).message);
-    return `Could not fetch PDF at ${pdfUrl}: network error`;
+    console.error("[fca-tools] fetchDoc fetch_error url=%s error=%s", docUrl, (err as Error).message);
+    return `Could not fetch document at ${docUrl}: network error`;
   }
   if (!res.ok) {
-    console.error("[fca-tools] fetchPDFSummary http_error url=%s status=%d", pdfUrl, res.status);
-    return `Could not fetch PDF at ${pdfUrl} (HTTP ${res.status})`;
+    console.error("[fca-tools] fetchDoc http_error url=%s status=%d", docUrl, res.status);
+    return `Could not fetch document at ${docUrl} (HTTP ${res.status})`;
   }
+
+  const contentType = res.headers.get("content-type") ?? "";
+  const isHtml = contentType.includes("text/html") || docUrl.toLowerCase().endsWith(".html") || docUrl.toLowerCase().endsWith(".htm");
+
+  if (isHtml) {
+    const html = await res.text();
+    const fullText = extractTextFromHtml(html);
+    const totalChars = fullText.length;
+    const LIMIT = 50_000;
+    console.log("[fca-tools] fetchDoc html url=%s totalChars=%d elapsed=%dms", docUrl, totalChars, Date.now() - start);
+
+    if (extractionPrompt) {
+      const idx = findBestAnchor(fullText.toLowerCase(), extractionPrompt);
+      if (idx !== -1) {
+        const s = Math.max(0, idx - 500);
+        const excerpt = fullText.slice(s, Math.min(totalChars, s + LIMIT));
+        return `[HTML document, ${totalChars.toLocaleString()} chars total — showing ${excerpt.length.toLocaleString()} chars near "${extractionPrompt}"]\n\n${excerpt}`;
+      }
+      console.warn("[fca-tools] fetchDoc html keyword_not_found url=%s prompt=%s", docUrl, extractionPrompt);
+    }
+
+    const excerpt = fullText.slice(0, LIMIT);
+    return `[HTML document, ${totalChars.toLocaleString()} chars total — showing first ${excerpt.length.toLocaleString()} chars]\n\n${excerpt}`;
+  }
+
+  // PDF path
   const buffer = await res.arrayBuffer();
-  console.log("[fca-tools] fetchPDFSummary downloaded url=%s sizeKB=%d elapsed=%dms", pdfUrl, Math.round(buffer.byteLength / 1024), Date.now() - start);
+  console.log("[fca-tools] fetchDoc pdf downloaded url=%s sizeKB=%d elapsed=%dms", docUrl, Math.round(buffer.byteLength / 1024), Date.now() - start);
 
   try {
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -384,30 +448,25 @@ export async function fetchPDFSummary(pdfUrl: string, extractionPrompt?: string)
     const fullText = result.text;
     const totalChars = fullText.length;
     const LIMIT = 50_000;
-    console.log("[fca-tools] fetchPDFSummary parsed url=%s pages=%d totalChars=%d elapsed=%dms", pdfUrl, result.numpages, totalChars, Date.now() - start);
+    console.log("[fca-tools] fetchDoc pdf parsed url=%s pages=%d totalChars=%d elapsed=%dms", docUrl, result.numpages, totalChars, Date.now() - start);
 
-    // If the caller specified what to look for, try to find the most relevant
-    // section by scanning for the keyword in the full text and returning a
-    // window of up to LIMIT chars centred around the first match.
     if (extractionPrompt) {
-      const needle = extractionPrompt.toLowerCase();
-      const idx = fullText.toLowerCase().indexOf(needle);
+      const idx = findBestAnchor(fullText.toLowerCase(), extractionPrompt);
       if (idx === -1) {
-        console.warn("[fca-tools] fetchPDFSummary keyword_not_found url=%s prompt=%s", pdfUrl, extractionPrompt);
+        console.warn("[fca-tools] fetchDoc pdf keyword_not_found url=%s prompt=%s", docUrl, extractionPrompt);
       } else {
         const start2 = Math.max(0, idx - 500);
         const end = Math.min(totalChars, start2 + LIMIT);
         const excerpt = fullText.slice(start2, end);
-        return `[PDF: ${result.numpages} pages, ${totalChars.toLocaleString()} chars total — showing ${excerpt.length.toLocaleString()} chars from match for "${extractionPrompt}"]\n\n${excerpt}`;
+        return `[PDF: ${result.numpages} pages, ${totalChars.toLocaleString()} chars total — showing ${excerpt.length.toLocaleString()} chars near "${extractionPrompt}"]\n\n${excerpt}`;
       }
     }
 
-    // Default: return from the beginning up to the limit
     const excerpt = fullText.slice(0, LIMIT);
     return `[PDF: ${result.numpages} pages, ${totalChars.toLocaleString()} chars total — showing first ${excerpt.length.toLocaleString()} chars]\n\n${excerpt}`;
   } catch (err) {
-    console.error("[fca-tools] fetchPDFSummary parse_error url=%s error=%s", pdfUrl, (err as Error).message);
-    return `PDF text extraction failed. Direct link: ${pdfUrl}`;
+    console.error("[fca-tools] fetchDoc pdf parse_error url=%s error=%s", docUrl, (err as Error).message);
+    return `Document text extraction failed. Direct link: ${docUrl}`;
   }
 }
 

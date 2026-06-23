@@ -7,10 +7,15 @@ flowchart LR
     User([User]) -->|types question| Chat[AI Chat Assistant]
     Chat -->|safety check| Guard{Input Filter}
     Guard -->|blocked response| User
-    Guard -->|approved| AI[Gemini AI Model]
-    AI -->|searches| FCA[(FCA Data Portal)]
-    FCA -->|live data| AI
-    AI -->|streamed response| Chat
+    Guard -->|approved| Provider{AWS creds\npresent?}
+    Provider -->|yes| Bedrock[Claude via AWS Bedrock]
+    Provider -->|no / expired| Gemini[Gemini 2.5 Flash]
+    Bedrock -->|searches| FCA[(FCA Data Portal)]
+    Gemini -->|searches| FCA
+    FCA -->|live data| Bedrock
+    FCA -->|live data| Gemini
+    Bedrock -->|streamed response| Chat
+    Gemini -->|streamed response| Chat
     Chat -->|answer + document links| User
 ```
 
@@ -28,8 +33,13 @@ flowchart TD
 
     subgraph Loop [Agentic Loop — up to 5 turns]
         direction TB
-        Gemini[Gemini 2.5 Flash\nprimary key] -->|quota exhausted| GeminiB[Gemini 2.5 Flash\nbackup key]
+        ProviderSelect{AWS creds\npresent?}
+        ProviderSelect -->|yes| Bedrock[Claude via AWS Bedrock\neu-west-1]
+        ProviderSelect -->|no| Gemini[Gemini 2.5 Flash\nprimary key]
+        Bedrock -->|auth error\nExpiredToken / 403| Gemini
+        Gemini -->|quota exhausted| GeminiB[Gemini 2.5 Flash\nbackup key]
         Gemini -->|503 transient| Gemini
+        Bedrock -->|function call| Tools
         Gemini -->|function call| Tools
         GeminiB -->|function call| Tools
 
@@ -43,6 +53,7 @@ flowchart TD
             PDF[fetch_pdf_summary]
         end
 
+        Tools -->|tool results| Bedrock
         Tools -->|tool results| Gemini
         Tools -->|tool results| GeminiB
     end
@@ -51,7 +62,7 @@ flowchart TD
     NSM1 & NSM2 & NSM3 & FIRDS & FITRS -->|POST /search?index=...| FCAAPI[(api.data.fca.org.uk)]
     PDF -->|GET artefact| FCAPortal[(data.fca.org.uk)]
     FCAAPI -->|JSON hits| Tools
-    FCAPortal -->|PDF bytes| Tools
+    FCAPortal -->|PDF / HTML bytes| Tools
 
     Loop -->|final text| Stream2[SSE stream\nword-by-word]
     Stream2 --> User

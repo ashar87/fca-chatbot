@@ -13,7 +13,8 @@ A visual clone of [data.fca.org.uk](https://data.fca.org.uk) with an embedded AI
 | Framework | Next.js 14 (App Router) |
 | Language | TypeScript |
 | Styling | Tailwind CSS |
-| AI Model | Gemini 2.5 Flash (`gemini-2.5-flash`, thinking disabled) via `@google/genai` v2.7.0 |
+| AI Model (primary) | Claude via AWS Bedrock (eu-west-1, temp credentials — expires hourly) via `@aws-sdk/client-bedrock-runtime` |
+| AI Model (fallback) | Gemini 2.5 Flash (`gemini-2.5-flash`, thinking disabled) via `@google/genai` v2.7.0 |
 | PDF extraction | `pdf-parse` |
 | ZIP extraction | `fflate` |
 | Markdown rendering | `react-markdown` |
@@ -47,7 +48,8 @@ src/
 │   ├── FIRDSSearchPage.tsx          # FIRDS instrument search page
 │   └── FITRSSearchPage.tsx          # FITRS file browser with inline ZIP/XML extraction
 └── lib/
-    └── fca-tools.ts                 # All FCA API calls + data models
+    ├── fca-tools.ts                 # All FCA API calls + data models
+    └── bedrock-provider.ts          # AWS Bedrock client, tool/history conversion, agentic loop
 ```
 
 ## Page Layout
@@ -125,18 +127,20 @@ User (ChatWidget)
     │  POST /api/chat  { messages[] }
     ▼
 chat/route.ts
-    │  Gemini Flash (agentic loop, up to 5 turns)
+    │  Provider selection (per request):
+    │    AWS creds present? → Claude via Bedrock (bedrock-provider.ts)
+    │    Absent or expired? → Gemini 2.5 Flash (withRetry, primary + backup key)
     │  ├── tool call → executeTool()
     │  │       └── fca-tools.ts functions
     │  │               └── POST to api.data.fca.org.uk (via edge proxy on Vercel)
     │  └── final text → SSE stream back to client
     ▼
-ChatWidget (renders markdown, streams word-by-word)
+ChatWidget (renders markdown, streams word-by-word, links open in new tab)
 ```
 
-The chat route runs an **agentic loop** (max 5 turns): Gemini can call multiple tools in sequence before producing a final answer.
+The chat route runs an **agentic loop** (max 5 turns): the active provider (Bedrock or Gemini) can call multiple tools in sequence before producing a final answer.
 
-### Agentic Loop — localHistory
+### Agentic Loop — localHistory (Gemini path)
 
 Each Gemini turn creates a fresh `client.chats.create({ history })`. To ensure the function call / function response pairs remain contiguous across turns (required by the Gemini API), a `localHistory` array grows after each turn:
 
@@ -147,6 +151,8 @@ turn 2:  localHistory = [initial + turn 1 exchange]  →  model reads results, r
 ```
 
 Without this, turn 2 would send function response parts with no preceding function call in history, causing a 400 `INVALID_ARGUMENT` error. This also makes key-switching safe — a new key always gets the full context.
+
+The Bedrock path (`bedrock-provider.ts`) manages its own `anthropicMessages` array that grows equivalently — `assistant` messages with `tool_use` blocks are immediately followed by `user` messages with `tool_result` blocks, as required by the Anthropic API.
 
 ### Streaming
 
@@ -244,7 +250,7 @@ Not intended to be called directly from the UI.
 
 ### `POST /api/chat`
 
-AI chat endpoint. Accepts conversation history, runs the Gemini agentic loop, streams SSE.
+AI chat endpoint. Accepts conversation history, runs the agentic loop (Bedrock primary, Gemini fallback), streams SSE.
 
 | Body field | Description |
 |---|---|
@@ -257,7 +263,7 @@ Rate limited: 20 requests per IP per minute (in-memory, resets on server restart
 
 ---
 
-## AI Tools (Gemini Function Declarations)
+## AI Tools (Function Declarations)
 
 The LLM has access to **six tools** (short selling disabled).
 
@@ -305,7 +311,7 @@ Returns: list of files with `fileName`, `fileType`, `publicationDate`, `download
 
 | Tool | Backend function | Description |
 |---|---|---|
-| `fetch_pdf_summary` | `fetchPDFSummary` | Downloads NSM PDF, extracts up to 50k chars, keyword-targeted window |
+| `fetch_pdf_summary` | `fetchPDFSummary` | Downloads NSM PDF or HTML document, extracts up to 50k chars, multi-word keyword anchor search |
 
 ### Disabled Tools
 
@@ -451,8 +457,13 @@ The NSM endpoint is protected by Cloudflare Bot Management. Vercel serverless IP
 
 | Variable | Required | Description |
 |---|---|---|
-| `GEMINI_API_KEY` | Yes | Primary Google Gemini API key |
-| `GEMINI_API_KEY_BACKUP` | No | Backup Gemini key — used automatically if primary hits quota (429/RESOURCE_EXHAUSTED) |
+| `AWS_ACCESS_KEY_ID` | Primary provider | AWS temporary credential (refresh hourly via `aws sso login` or equivalent) |
+| `AWS_SECRET_ACCESS_KEY` | Primary provider | AWS temporary credential |
+| `AWS_SESSION_TOKEN` | Primary provider | AWS session token — absence causes automatic fallback to Gemini |
+| `AWS_REGION` | No | AWS region for Bedrock (default: `eu-west-1`) |
+| `BEDROCK_MODEL_ID` | No | Bedrock model ARN (default: FCA inference profile ARN) |
+| `GEMINI_API_KEY` | Fallback | Primary Google Gemini API key — used when AWS creds absent or expired |
+| `GEMINI_API_KEY_BACKUP` | No | Backup Gemini key — used if primary hits quota (429/RESOURCE_EXHAUSTED) |
 | `VERCEL_URL` | Auto (Vercel) | Used by `fcaPost` to detect Vercel environment and route NSM via edge proxy |
 | `VERCEL_AUTOMATION_BYPASS_SECRET` | Vercel only | Adds `x-vercel-protection-bypass` header to edge proxy self-calls |
 
@@ -470,7 +481,7 @@ Add to `.env.local` for local development.
 
 ```bash
 npm install
-echo "GEMINI_API_KEY=your_key_here" > .env.local
+# Populate .env.local with AWS credentials (primary) and/or GEMINI_API_KEY (fallback)
 npm run dev
 ```
 
@@ -488,6 +499,7 @@ The floating chat widget (`ChatWidget.tsx`) has the following behaviours:
 - **Starter prompts** shown when no messages; accessible via 💡 button during a conversation
 - **Clear conversation** requires two clicks — first click shows "Confirm?", second click clears. Auto-reverts after 3 seconds.
 - **Disclaimer** ("Not financial or regulatory advice") shown only on the last completed assistant message, not on every message
+- **Links open in new tab** — all `<a>` elements rendered by `react-markdown` have `target="_blank" rel="noopener noreferrer"`
 - **Accessibility:** `role="dialog"`, `aria-modal`, `aria-labelledby`, `aria-label` on all icon buttons, `aria-live` regions for status text and completed responses, focus trap (input focuses on open, trigger refocuses on close)
 - **Focus ring** on chat input is CSS-only via `.chat-input:focus` — no JS `onFocus`/`onBlur` handlers
 
@@ -500,13 +512,16 @@ The floating chat widget (`ChatWidget.tsx`) has the following behaviours:
 - Company name → `search_nsm_by_company`; LEI code → `search_nsm_by_lei`; topic/keyword → `search_nsm_by_content`
 - FIRDS → use the most precise identifier available (instrument_id > isin > issuer_lei > classification > name)
 - FITRS → browse by date range; remind user files are ZIP downloads containing XML transparency data
-- PDF fetch only triggered when user explicitly asks for content from inside a document
-- NSM returns 10 results; Gemini uses `page: 1`, `page: 2` etc. when user asks for more/older results
+- PDF/HTML fetch only triggered when user explicitly asks for content from inside a document
+- NSM returns 10 results; model uses `page: 1`, `page: 2` etc. when user asks for more/older results
 
-### PDF extraction (`fetchPDFSummary`)
+### Document extraction (`fetchPDFSummary`)
+- Supports **PDF** (via `pdf-parse`) and **HTML** (tag-stripped, entity-decoded)
+- Format detected from `Content-Type` header or `.html`/`.htm` URL suffix
 - **50,000 character limit**
-- `extraction_prompt` scans full document and returns a window around the first keyword match
-- Returns metadata header: page count and total character count
+- `extraction_prompt` uses multi-word anchor search: tries full phrase first, then individual words (stopwords skipped), returns a window around the earliest hit
+- Falls back to returning the document from the beginning if no keyword matches
+- Returns metadata header: page count (PDF) or total char count, and chars shown
 
 ### Prompt injection & off-topic filter
 
@@ -520,7 +535,7 @@ Two-layer defence in `chat/route.ts`:
 | Injection patterns | 7 regexes: "ignore previous instructions", "you are now a…", "reveal your system prompt", "jailbreak", etc. |
 | Off-topic | 17 patterns, only triggered when no FCA signals present |
 
-**Layer 2 — System prompt hardening:** `## Security & scope` section instructs Gemini to refuse off-topic questions and ignore injected instructions.
+**Layer 2 — System prompt hardening:** `## Security & scope` section instructs the model to refuse off-topic questions and ignore injected instructions.
 
 ---
 
@@ -537,8 +552,14 @@ Two-layer defence in `chat/route.ts`:
 - **FITRS date format is DD/MM/YYYY** — unlike NSM (ISO 8601). Always convert before sending.
 - **`fflate` for ZIP extraction** — lightweight, works in Node.js without native bindings. XML parsed with regex (no DOM parser available in Node.js without additional dependencies).
 - **Date descriptions embed today's date** — `dateFromDesc()` / `dateToDesc()` called at request time so LLM resolves relative phrases correctly.
-- **Pre-filter before Gemini** — `guardInput()` blocks injection and off-topic queries server-side, saving API calls.
+- **Pre-filter before LLM** — `guardInput()` blocks injection and off-topic queries server-side, saving API calls.
 - **Streaming over JSON** — SSE keeps UI responsive during multi-turn tool calls.
 - **Gemini backup key fallback** — `withRetry` in `chat/route.ts` accepts a key index and iterates through `getApiKeys()` (primary then backup). Quota errors (429 / `RESOURCE_EXHAUSTED` / `quota`) immediately switch to the next key with no delay. Transient errors (503) retry the same key up to 3 times with 1s/2s backoff. Non-retryable errors propagate immediately. Configure via `GEMINI_API_KEY_BACKUP`; if unset, behaviour is unchanged.
-- **`localHistory` grows per turn** — each agentic loop turn appends the sent parts + model function call parts to `localHistory`. This ensures function response parts always follow a function call in history, preventing 400 `INVALID_ARGUMENT` errors on turn 2+. Also makes key-switching safe mid-loop.
+- **`localHistory` grows per turn (Gemini)** — each agentic loop turn appends the sent parts + model function call parts to `localHistory`. This ensures function response parts always follow a function call in history, preventing 400 `INVALID_ARGUMENT` errors on turn 2+. Also makes key-switching safe mid-loop.
+- **AWS Bedrock as primary provider** — `isBedrockAvailable()` checks for all three AWS credential env vars at request time (no network call). If credentials are present, `runBedrockLoop()` in `bedrock-provider.ts` is tried first. Auth errors (`ExpiredTokenException`, `UnrecognizedClientException`, HTTP 403) are caught and the request falls through to Gemini transparently. Non-auth errors propagate normally.
+- **Tool declarations converted per provider** — `TOOL_DECLARATIONS` is in Gemini format (uppercase types, `parameters`). `toAnthropicTools()` converts to Anthropic format (lowercase types, `input_schema`) at call time; no duplication of declarations.
+- **Chat result format enforced via system prompt** — NSM results must be bullet lists (`- **[Headline](url)** — Type · Date`); FIRDS and FITRS also use bullet format. Tables are avoided as they render poorly in the chat widget.
+- **Document links open in new tab** — `react-markdown` `components` prop overrides `<a>` with `target="_blank"` so users can read documents without losing their chat session.
+- **HTML document support in `fetchPDFSummary`** — detected via `Content-Type: text/html` or `.html`/`.htm` suffix. Tags and common entities stripped with regex; same 50k-char extraction window applied.
+- **Multi-word keyword anchor search** — `findBestAnchor()` tries the full phrase first, then falls back to individual meaningful words (stopwords excluded). Returns the earliest hit position, so partial prompts like "director PDMR shareholding" reliably anchor to the relevant section.
 - **Short selling disabled** — `get_short_positions` tool and all related UI are commented out (not deleted). The SSR proxy endpoints tried (`/api/proxy/ssr/positions`, `/api/proxy/public/short-positions`) returned no data. Re-enable once the correct FCA API endpoint is confirmed.

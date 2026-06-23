@@ -322,7 +322,7 @@ export default function ChatWidget({ activeSection }: Props) {
                           </span>
                         ) : (
                           <>
-                            <ReactMarkdown>{msg.content + (showCursor ? "▌" : "")}</ReactMarkdown>
+                            <ReactMarkdown components={{ a: ({ ...props }) => <a {...props} target="_blank" rel="noopener noreferrer" /> }}>{msg.content + (showCursor ? "▌" : "")}</ReactMarkdown>
                             {/* Disclaimer only on the final completed assistant message */}
                             {msg.content && !streaming && isLastAssistant && (
                               <p className="text-[10px] text-gray-400 mt-2 border-t border-gray-200 pt-1">
