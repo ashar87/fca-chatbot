@@ -119,8 +119,6 @@ export interface NSMFiling {
 // The FCA API uses these exact type values in the `type` field.
 // Friendly aliases let the LLM pass natural language that we map before querying.
 const FILING_TYPE_ALIASES: Record<string, string> = {
-  "annual report": "Annual Report",
-  "annual reports": "Annual Report",
   "prospectus": "Prospectus",
   "circular": "Circ re.",
   "circulars": "Circ re.",
@@ -140,8 +138,39 @@ const FILING_TYPE_ALIASES: Record<string, string> = {
   "miscellaneous": "Miscellaneous",
 };
 
-function resolveFilingType(raw: string): string {
-  return FILING_TYPE_ALIASES[raw.toLowerCase()] ?? raw;
+// For filing types where the API criterion name is `type_code` (not `type`),
+// using codes is more reliable than matching on the display string.
+// The "err:" prefix covers amended/corrected submissions.
+const FILING_TYPE_CODES: Record<string, string[]> = {
+  // Annual reports
+  "annual report": ["acs", "err:acs"],
+  "annual reports": ["acs", "err:acs"],
+  "annual financial report": ["acs", "err:acs"],
+  // Half-yearly / interim reports
+  "half yearly": ["ir", "err:ir"],
+  "half yearly report": ["ir", "err:ir"],
+  "half year report": ["ir", "err:ir"],
+  "interim report": ["ir", "err:ir"],
+  "interim results": ["ir", "err:ir"],
+  "half year": ["ir", "err:ir"],
+  // Quarterly reports (Q1 and Q3 — the API does not distinguish between them at type_code level)
+  "quarterly report": ["qrf", "err:qrf", "qrt", "err:qrt"],
+  "quarterly reports": ["qrf", "err:qrf", "qrt", "err:qrt"],
+  "1st quarter": ["qrf", "err:qrf", "qrt", "err:qrt"],
+  "first quarter": ["qrf", "err:qrf", "qrt", "err:qrt"],
+  "q1 report": ["qrf", "err:qrf", "qrt", "err:qrt"],
+  "3rd quarter": ["qrf", "err:qrf", "qrt", "err:qrt"],
+  "third quarter": ["qrf", "err:qrf", "qrt", "err:qrt"],
+  "q3 report": ["qrf", "err:qrf", "qrt", "err:qrt"],
+  // Periodic reports (all of the above combined)
+  "periodic report": ["qrf", "err:qrf", "qrt", "err:qrt", "acs", "err:acs", "ir", "err:ir"],
+  "periodic reports": ["qrf", "err:qrf", "qrt", "err:qrt", "acs", "err:acs", "ir", "err:ir"],
+};
+
+function buildTypeFilter(raw: string): { name: string; value: unknown } {
+  const codes = FILING_TYPE_CODES[raw.toLowerCase()];
+  if (codes) return { name: "type_code", value: codes };
+  return { name: "type", value: FILING_TYPE_ALIASES[raw.toLowerCase()] ?? raw };
 }
 
 function buildDateCriteria(dateFrom?: string, dateTo?: string) {
@@ -207,7 +236,7 @@ export async function searchNSMByCompany(params: {
     { name: "latest_flag", value: "Y" },
   ];
   if (params.filing_type) {
-    criteria.push({ name: "type", value: resolveFilingType(params.filing_type) });
+    criteria.push(buildTypeFilter(params.filing_type));
   }
   if (params.source) {
     criteria.push({ name: "source", value: params.source });
@@ -260,7 +289,7 @@ export async function searchNSMByLEI(params: {
     { name: "latest_flag", value: "Y" },
   ];
   if (params.filing_type) {
-    criteria.push({ name: "type", value: resolveFilingType(params.filing_type) });
+    criteria.push(buildTypeFilter(params.filing_type));
   }
   if (params.source) {
     criteria.push({ name: "source", value: params.source });
@@ -314,7 +343,7 @@ export async function searchNSMByContent(params: {
     { name: "latest_flag", value: "Y" },
   ];
   if (params.filing_type) {
-    criteria.push({ name: "type", value: resolveFilingType(params.filing_type) });
+    criteria.push(buildTypeFilter(params.filing_type));
   }
   if (params.source) {
     criteria.push({ name: "source", value: params.source });
@@ -442,13 +471,15 @@ export async function fetchPDFSummary(docUrl: string, extractionPrompt?: string)
   console.log("[fca-tools] fetchDoc pdf downloaded url=%s sizeKB=%d elapsed=%dms", docUrl, Math.round(buffer.byteLength / 1024), Date.now() - start);
 
   try {
+    // pdf-parse v2 exports a class — instantiate with the buffer then call getText()
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    const pdfParse: (buf: Buffer) => Promise<{ text: string; numpages: number }> = (await import("pdf-parse") as any).default ?? (await import("pdf-parse") as any);
-    const result = await pdfParse(Buffer.from(buffer));
+    const { PDFParse } = await import("pdf-parse") as any;
+    const parser = new PDFParse({ data: Buffer.from(buffer) });
+    const result = await parser.getText() as { text: string; total: number };
     const fullText = result.text;
     const totalChars = fullText.length;
     const LIMIT = 50_000;
-    console.log("[fca-tools] fetchDoc pdf parsed url=%s pages=%d totalChars=%d elapsed=%dms", docUrl, result.numpages, totalChars, Date.now() - start);
+    console.log("[fca-tools] fetchDoc pdf parsed url=%s pages=%d totalChars=%d elapsed=%dms", docUrl, result.total, totalChars, Date.now() - start);
 
     if (extractionPrompt) {
       const idx = findBestAnchor(fullText.toLowerCase(), extractionPrompt);
@@ -458,12 +489,12 @@ export async function fetchPDFSummary(docUrl: string, extractionPrompt?: string)
         const start2 = Math.max(0, idx - 500);
         const end = Math.min(totalChars, start2 + LIMIT);
         const excerpt = fullText.slice(start2, end);
-        return `[PDF: ${result.numpages} pages, ${totalChars.toLocaleString()} chars total — showing ${excerpt.length.toLocaleString()} chars near "${extractionPrompt}"]\n\n${excerpt}`;
+        return `[PDF: ${result.total} pages, ${totalChars.toLocaleString()} chars total — showing ${excerpt.length.toLocaleString()} chars near "${extractionPrompt}"]\n\n${excerpt}`;
       }
     }
 
     const excerpt = fullText.slice(0, LIMIT);
-    return `[PDF: ${result.numpages} pages, ${totalChars.toLocaleString()} chars total — showing first ${excerpt.length.toLocaleString()} chars]\n\n${excerpt}`;
+    return `[PDF: ${result.total} pages, ${totalChars.toLocaleString()} chars total — showing first ${excerpt.length.toLocaleString()} chars]\n\n${excerpt}`;
   } catch (err) {
     console.error("[fca-tools] fetchDoc pdf parse_error url=%s error=%s", docUrl, (err as Error).message);
     return `Document text extraction failed. Direct link: ${docUrl}`;
