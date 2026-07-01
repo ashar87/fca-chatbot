@@ -3,14 +3,15 @@ import type { FunctionDeclaration } from "@google/genai";
 // ─── Credential check ─────────────────────────────────────────────────────────
 
 /**
- * Returns true if all three AWS credential env vars are present.
- * Does NOT make a network call — credential expiry is detected at call time.
+ * Returns true if AWS credentials appear to be configured — either an SSO/named
+ * profile (AWS_PROFILE, auto-refreshed by the SDK) or explicit static env vars.
+ * Does NOT make a network call — credential validity/expiry is detected at call time
+ * and triggers the Gemini fallback via isBedrockAuthError.
  */
 export function isBedrockAvailable(): boolean {
   return !!(
-    process.env.AWS_ACCESS_KEY_ID &&
-    process.env.AWS_SECRET_ACCESS_KEY &&
-    process.env.AWS_SESSION_TOKEN
+    process.env.AWS_PROFILE ||
+    (process.env.AWS_ACCESS_KEY_ID && process.env.AWS_SECRET_ACCESS_KEY)
   );
 }
 
@@ -24,10 +25,17 @@ export function isBedrockAuthError(err: unknown): boolean {
     name === "ExpiredTokenException" ||
     name === "UnrecognizedClientException" ||
     name === "InvalidSignatureException" ||
+    name === "CredentialsProviderError" ||
+    name === "SSOTokenProviderFailure" ||
     msg.includes("ExpiredToken") ||
     msg.includes("security token") ||
     msg.includes("UnrecognizedClient") ||
     msg.includes("InvalidSignature") ||
+    // SSO session expired / not logged in — credential chain can't resolve
+    msg.includes("SSO session") ||
+    msg.includes("session associated with this profile has expired") ||
+    msg.includes("Token is expired") ||
+    msg.includes("Could not load credentials") ||
     // HTTP 403 from Bedrock typically means auth failure
     msg.includes("403")
   );
@@ -170,13 +178,22 @@ export async function runBedrockLoop({
   const { BedrockRuntimeClient, InvokeModelWithResponseStreamCommand } =
     await import("@aws-sdk/client-bedrock-runtime");
 
+  // Prefer static env-var credentials if explicitly provided; otherwise omit the
+  // credentials block so the SDK's default provider chain resolves them from the
+  // configured profile (AWS_PROFILE). For an SSO profile the chain reads the SSO
+  // cache and auto-refreshes the hourly role credentials — no manual paste needed.
+  const hasStaticCreds = !!(process.env.AWS_ACCESS_KEY_ID && process.env.AWS_SECRET_ACCESS_KEY);
   const client = new BedrockRuntimeClient({
     region: process.env.AWS_REGION ?? "eu-west-1",
-    credentials: {
-      accessKeyId: process.env.AWS_ACCESS_KEY_ID!,
-      secretAccessKey: process.env.AWS_SECRET_ACCESS_KEY!,
-      sessionToken: process.env.AWS_SESSION_TOKEN!,
-    },
+    ...(hasStaticCreds
+      ? {
+          credentials: {
+            accessKeyId: process.env.AWS_ACCESS_KEY_ID!,
+            secretAccessKey: process.env.AWS_SECRET_ACCESS_KEY!,
+            ...(process.env.AWS_SESSION_TOKEN ? { sessionToken: process.env.AWS_SESSION_TOKEN } : {}),
+          },
+        }
+      : {}),
   });
 
   const modelId = process.env.BEDROCK_MODEL_ID ?? "arn:aws:bedrock:eu-west-1:429326349027:application-inference-profile/uafbxgbdqw21";
