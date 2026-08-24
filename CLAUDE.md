@@ -242,7 +242,7 @@ Edge-runtime pass-through proxy for `api.data.fca.org.uk`. Used internally by `f
 
 | Query param | Description |
 |---|---|
-| `index` | FCA index name (e.g. `fca-nsm-searchdata`) |
+| `index` | FCA index name (e.g. `nsm-search`) |
 
 Body is forwarded verbatim to the FCA API. Response is forwarded back.
 
@@ -343,9 +343,9 @@ Content-Type: application/json
 
 | Register | Index name |
 |---|---|
-| NSM | `fca-nsm-searchdata` |
-| FIRDS | `fca-firds-viewdata` |
-| FITRS file index | `fca-fitrs-downloadfiles` |
+| NSM | `nsm-search` |
+| FIRDS | `firds-view` |
+| FITRS file index | `fitrs-downloads` |
 
 **General body shape:**
 ```json

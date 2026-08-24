@@ -16,7 +16,7 @@ const FCA_SEARCH_URL = "https://api.data.fca.org.uk/search";
 
 export async function POST(request: Request) {
   const incomingUrl = new URL(request.url);
-  const index = incomingUrl.searchParams.get("index") ?? "fca-nsm-searchdata";
+  const index = incomingUrl.searchParams.get("index") ?? "nsm-search";
 
   let body: string;
   try {

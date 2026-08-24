@@ -250,7 +250,7 @@ export async function searchNSMByCompany(params: {
     criteriaObj: { criteria, dateCriteria: buildDateCriteria(params.date_from, params.date_to) },
   };
 
-  const data = await fcaPost(`${FCA_API_BASE}/search?index=fca-nsm-searchdata`, body) as Record<string, unknown> | null;
+  const data = await fcaPost(`${FCA_API_BASE}/search?index=nsm-search`, body) as Record<string, unknown> | null;
   if (!data) {
     console.warn("[fca-tools] searchNSMByCompany no_data company=%s", params.company);
     return { total: 0, filings: [] };
@@ -303,7 +303,7 @@ export async function searchNSMByLEI(params: {
     criteriaObj: { criteria, dateCriteria: buildDateCriteria(params.date_from, params.date_to) },
   };
 
-  const data = await fcaPost(`${FCA_API_BASE}/search?index=fca-nsm-searchdata`, body) as Record<string, unknown> | null;
+  const data = await fcaPost(`${FCA_API_BASE}/search?index=nsm-search`, body) as Record<string, unknown> | null;
   if (!data) {
     console.warn("[fca-tools] searchNSMByLEI no_data lei=%s", params.lei);
     return { total: 0, filings: [] };
@@ -357,7 +357,7 @@ export async function searchNSMByContent(params: {
     criteriaObj: { criteria, dateCriteria: buildDateCriteria(params.date_from, params.date_to) },
   };
 
-  const data = await fcaPost(`${FCA_API_BASE}/search?index=fca-nsm-searchdata`, body) as Record<string, unknown> | null;
+  const data = await fcaPost(`${FCA_API_BASE}/search?index=nsm-search`, body) as Record<string, unknown> | null;
   if (!data) {
     console.warn("[fca-tools] searchNSMByContent no_data keywords=%s", params.keywords);
     return { total: 0, filings: [] };
@@ -613,7 +613,7 @@ export async function searchFIRDS(params: {
   }
 
   const firdsStart = Date.now();
-  const data = await fcaPost(`${FCA_API_BASE}/search?index=fca-firds-viewdata`, body) as Record<string, unknown> | null;
+  const data = await fcaPost(`${FCA_API_BASE}/search?index=firds-view`, body) as Record<string, unknown> | null;
 
   if (!data) {
     console.warn("[fca-tools] searchFIRDS no_data keyword=%s elapsed=%dms", keyword, Date.now() - firdsStart);
@@ -718,7 +718,7 @@ export async function searchFITRS(params: {
     },
   };
 
-  const data = await fcaPost(`${FCA_API_BASE}/search?index=fca-fitrs-downloadfiles`, body) as Record<string, unknown> | null;
+  const data = await fcaPost(`${FCA_API_BASE}/search?index=fitrs-downloads`, body) as Record<string, unknown> | null;
 
   if (!data) {
     console.warn("[fca-tools] searchFITRS no_data dateFrom=%s dateTo=%s elapsed=%dms", dateFrom, dateTo, Date.now() - fitrsStart);
