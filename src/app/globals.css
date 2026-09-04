@@ -237,6 +237,15 @@ body {
   padding: 16px;
 }
 
+/* Chat panel slide-in from right */
+@keyframes slideInRight {
+  from { transform: translateX(100%); }
+  to   { transform: translateX(0); }
+}
+.chat-panel-enter {
+  animation: slideInRight 0.22s ease-out;
+}
+
 /* Chat widget scrollbar */
 .chat-scroll::-webkit-scrollbar { width: 4px; }
 .chat-scroll::-webkit-scrollbar-track { background: #f1f1f1; }

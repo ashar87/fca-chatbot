@@ -36,12 +36,6 @@ const STARTER_PROMPTS: Record<PortalSection, string[]> = {
   // ],
 };
 
-const SECTION_LABELS: Record<PortalSection, string> = {
-  "nsm-search": "NSM",
-  "nsm-about": "NSM",
-  firds: "FIRDS",
-  fitrs: "FITRS",
-};
 
 interface Props {
   activeSection: PortalSection;
@@ -212,8 +206,8 @@ export default function ChatWidget({ activeSection }: Props) {
           role="dialog"
           aria-modal="true"
           aria-labelledby="chat-panel-title"
-          className="fixed bottom-6 right-6 w-[380px] max-w-[calc(100vw-2rem)] bg-white flex flex-col z-50"
-          style={{ height: "min(520px, calc(100dvh - 96px))", border: "1px solid #b1b4b6", boxShadow: "0 4px 20px rgba(0,0,0,0.2)", borderRadius: 0 }}
+          className="fixed top-0 right-0 h-full w-full sm:w-[440px] bg-white flex flex-col z-50 chat-panel-enter"
+          style={{ borderLeft: "1px solid #b1b4b6", boxShadow: "-4px 0 20px rgba(0,0,0,0.15)", borderRadius: 0 }}
         >
           {/* Header */}
           <div className="flex items-center justify-between px-4 py-3 text-white" style={{ backgroundColor: "var(--fca-purple)" }}>
@@ -223,7 +217,6 @@ export default function ChatWidget({ activeSection }: Props) {
               </svg>
               <div>
                 <span id="chat-panel-title" className="font-bold text-sm">FCA Data Assistant</span>
-                <span className="text-white/60 text-xs ml-2">{SECTION_LABELS[activeSection]}</span>
               </div>
             </div>
             <div className="flex items-center gap-3">
